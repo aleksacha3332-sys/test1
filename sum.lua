@@ -1,40 +1,42 @@
 -- ============================================================================
---  QUADCOPTER FOR CREATE: AVIONICS
---  Auto-detects propeller control method, English output
+--  QUADCOPTER WITH ROTATION SPEED CONTROLLERS
+--  Uses Create's RotationSpeedController to set propeller RPM
 -- ============================================================================
 
 -- ===== SETTINGS (CHANGE TO YOUR DEVICE NAMES) =====
 local PROPS = {
-    FL = "propeller_bearing_0",   -- front left
-    FR = "propeller_bearing_1",   -- front right
-    BL = "propeller_bearing_2",   -- back left
-    BR = "propeller_bearing_3"    -- back right
+    FL = "rotation_speed_controller_0",   -- front left
+    FR = "rotation_speed_controller_1",   -- front right
+    BL = "rotation_speed_controller_2",   -- back left
+    BR = "rotation_speed_controller_3"    -- back right
 }
 local GIMBAL = "gimbal_sensor_0"
 local ALT = "altitude_sensor_0"
 local MONITOR = "monitor_0"
 
 -- Redstone sides for the 4 analog inputs (0-15) from your controller
-local SIDE_FORWARD = "front"   -- signal when tilting forward
-local SIDE_BACKWARD = "back"   -- signal when tilting backward
-local SIDE_LEFT = "left"       -- signal when tilting left
-local SIDE_RIGHT = "right"     -- signal when tilting right
+local SIDE_FORWARD = "front"
+local SIDE_BACKWARD = "back"
+local SIDE_LEFT = "left"
+local SIDE_RIGHT = "right"
 
--- Max tilt angle in degrees (when stick is fully deflected)
+-- Max tilt angle (degrees)
 local MAX_ANGLE = 30
-
--- Dead zone for normalized deflection (0.05 = 5%)
 local DEAD_ZONE = 0.05
 
--- PID coefficients (tune for your drone)
+-- PID coefficients
 local PID = {
     pitch = { P = 2.0, D = 0.5 },
     roll  = { P = 2.0, D = 0.5 },
     alt   = { P = 1.0, D = 0.2 }
 }
 
--- Base thrust for hovering (adjust experimentally)
+-- Base thrust for hovering (0..1)
 local BASE_THRUST = 0.55
+
+-- Speed range (RPM) for motors
+local MIN_RPM = 0
+local MAX_RPM = 256   -- adjust based on your drone's needs
 -- ============================================================
 
 -- Helper functions
@@ -42,7 +44,7 @@ local function clamp(val, min, max)
     return math.max(min, math.min(max, val))
 end
 
--- Safe peripheral wrapping with error message in English
+-- Safe peripheral wrapping
 local function safeWrap(name)
     local p = peripheral.wrap(name)
     if not p then
@@ -67,55 +69,50 @@ end
 
 print("=== All devices found ===")
 
--- ---- Auto-detect method for setting propeller thrust ----
-local function getPropellerControlMethod(prop)
-    -- List of possible method names to set thrust/power/speed
-    local candidates = {"setThrust", "setSpeed", "setPower", "setTargetThrust", "setThrustPercent", "set"}
+-- ---- Auto-detect method for setting speed on RotationSpeedController ----
+local function getSpeedControlMethod(controller)
+    local candidates = {"setTargetSpeed", "setSpeed", "set", "setRPM"}
     for _, method in ipairs(candidates) do
-        if prop[method] and type(prop[method]) == "function" then
-            -- Test with a dummy call to see if it works
-            local success, err = pcall(function() prop[method](prop, true, 0.5) end)
+        if controller[method] and type(controller[method]) == "function" then
+            -- Test with dummy call
+            local success, err = pcall(function() controller[method](controller, 100) end)
             if success then
                 return method
             end
-            -- Try without the boolean parameter (some may accept just a number)
-            success, err = pcall(function() prop[method](prop, 0.5) end)
-            if success then
-                return method, false   -- second return indicates no boolean needed
-            end
         end
     end
-    error("No recognized control method found for propeller: " .. tostring(prop))
+    error("No recognized speed control method found for controller: " .. tostring(controller))
 end
 
--- ---- Prepare control functions for each propeller ----
-local function makeSetFunction(prop)
-    local method, needsBool = getPropellerControlMethod(prop)
-    return function(value)
-        if needsBool == false then
-            prop[method](prop, value)
-        else
-            prop[method](prop, true, value)   -- assume boolean first param
-        end
+-- ---- Prepare control functions for each controller ----
+local function makeSetSpeedFunction(controller)
+    local method = getSpeedControlMethod(controller)
+    return function(rpm)
+        controller[method](controller, rpm)
     end
 end
 
-local setFL = makeSetFunction(fl)
-local setFR = makeSetFunction(fr)
-local setBL = makeSetFunction(bl)
-local setBR = makeSetFunction(br)
+local setSpeedFL = makeSetSpeedFunction(fl)
+local setSpeedFR = makeSetSpeedFunction(fr)
+local setSpeedBL = makeSetSpeedFunction(bl)
+local setSpeedBR = makeSetSpeedFunction(br)
 
-print("Propeller control methods detected successfully.")
+print("Speed controllers detected successfully.")
 
 -- ---- Safe altitude reading ----
 local function getAltitudeSafe()
-    local possibleMethods = {"getAltitude", "getAltitudeData", "getAlt", "getHeight"}
+    local possibleMethods = {"getHeight", "getAltitude", "getAltitudeData", "getAlt"}
     for _, method in ipairs(possibleMethods) do
         local success, result = pcall(function()
             return altSensor[method]()
         end)
-        if success and type(result) == "table" and result.altitude ~= nil then
-            return result
+        if success then
+            if type(result) == "number" then
+                return { altitude = result, verticalSpeed = 0 }
+            end
+            if type(result) == "table" and result.altitude ~= nil then
+                return result
+            end
         end
     end
     print("Warning: failed to get altitude. Using dummy (0 m).")
@@ -145,13 +142,13 @@ local function getGimbalAnglesSafe()
     return { pitch = 0, roll = 0 }
 end
 
--- ---- PID state variables ----
+-- ---- PID state ----
 local prevErrPitch = 0
 local prevErrRoll = 0
 local prevErrAlt = 0
-local targetAlt = nil   -- set on first valid measurement
+local targetAlt = nil
 
--- ---- FPS counter ----
+-- ---- FPS ----
 local lastTime = os.clock()
 local frameCount = 0
 local fps = 0
@@ -166,21 +163,18 @@ while true do
     if dt <= 0 then dt = 0.001 end
     lastTime = now
 
-    -- ---- Read 4 analog signals from controller (0..15) ----
+    -- ---- Read controller signals ----
     local sigFwd = redstone.getAnalogInput(SIDE_FORWARD)
     local sigBwd = redstone.getAnalogInput(SIDE_BACKWARD)
     local sigLft = redstone.getAnalogInput(SIDE_LEFT)
     local sigRgt = redstone.getAnalogInput(SIDE_RIGHT)
 
-    -- Convert to normalized deflection [-1 .. +1]
     local netPitch = (sigFwd - sigBwd) / 15
     local netRoll  = (sigRgt - sigLft) / 15
 
-    -- Dead zone
     if math.abs(netPitch) < DEAD_ZONE then netPitch = 0 end
     if math.abs(netRoll)  < DEAD_ZONE then netRoll  = 0 end
 
-    -- Target angles (degrees)
     local targetPitch = netPitch * MAX_ANGLE
     local targetRoll  = netRoll  * MAX_ANGLE
 
@@ -193,18 +187,17 @@ while true do
     local pitch = gimbalData.pitch
     local roll  = gimbalData.roll
 
-    -- Set target altitude on first valid reading
     if targetAlt == nil then
         if altitude > 0.1 then
             targetAlt = altitude
         else
-            targetAlt = 5   -- fallback if sensor not working
+            targetAlt = 5
             print("Altitude unknown, target set to 5 m")
         end
         print("Target altitude: " .. string.format("%.1f m", targetAlt))
     end
 
-    -- ---- PID controllers ----
+    -- ---- PID ----
     local errPitch = targetPitch - pitch
     local errRoll  = targetRoll - roll
     local errAlt   = targetAlt - altitude
@@ -232,12 +225,18 @@ while true do
     local powerBL = clamp(thrust + outRoll + outPitch, 0, 1)
     local powerBR = clamp(thrust - outRoll + outPitch, 0, 1)
 
-    -- ---- Send motor commands in parallel (using auto-detected methods) ----
+    -- Convert power (0..1) to RPM
+    local rpmFL = MIN_RPM + powerFL * (MAX_RPM - MIN_RPM)
+    local rpmFR = MIN_RPM + powerFR * (MAX_RPM - MIN_RPM)
+    local rpmBL = MIN_RPM + powerBL * (MAX_RPM - MIN_RPM)
+    local rpmBR = MIN_RPM + powerBR * (MAX_RPM - MIN_RPM)
+
+    -- ---- Send RPM commands in parallel ----
     parallel.waitForAll(
-        function() setFL(powerFL) end,
-        function() setFR(powerFR) end,
-        function() setBL(powerBL) end,
-        function() setBR(powerBR) end
+        function() setSpeedFL(rpmFL) end,
+        function() setSpeedFR(rpmFR) end,
+        function() setSpeedBL(rpmBL) end,
+        function() setSpeedBR(rpmBR) end
     )
 
     -- ---- Display on monitor ----
@@ -252,11 +251,11 @@ while true do
         monitor.setCursorPos(1,4)
         monitor.write(string.format("Alt: % 6.1fm  VSpd: % 5.1f m/s", altitude, vertSpeed))
         monitor.setCursorPos(1,5)
-        monitor.write("--- Motor Powers ---")
+        monitor.write("--- Motor RPM ---")
         monitor.setCursorPos(1,6)
-        monitor.write(string.format("FL: %5.1f%%  FR: %5.1f%%", powerFL*100, powerFR*100))
+        monitor.write(string.format("FL: %4.0f  FR: %4.0f", rpmFL, rpmFR))
         monitor.setCursorPos(1,7)
-        monitor.write(string.format("BL: %5.1f%%  BR: %5.1f%%", powerBL*100, powerBR*100))
+        monitor.write(string.format("BL: %4.0f  BR: %4.0f", rpmBL, rpmBR))
         monitor.setCursorPos(1,8)
         monitor.write(string.format("Stick: F%d B%d  L%d R%d", sigFwd, sigBwd, sigLft, sigRgt))
         monitor.setCursorPos(1,9)
@@ -265,7 +264,7 @@ while true do
         monitor.write(string.format("FPS: %d", fps))
     end
 
-    -- ---- FPS counter ----
+    -- ---- FPS ----
     frameCount = frameCount + 1
     if now - fpsTimer >= 1 then
         fps = frameCount
