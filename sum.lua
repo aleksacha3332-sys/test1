@@ -1,29 +1,30 @@
 -- ============================================================================
---  КВАДРОКОПТЕР С ДВУХОСЕВЫМ ПУЛЬТОМ (4 аналоговых выхода: вперёд/назад/влево/вправо)
+--  КВАДРОКОПТЕР ДЛЯ CREATE: AVIONICS
+--  С управлением от двухосевого пульта (4 аналоговых сигнала 0-15)
+--  С автоопределением методов датчиков и защитой от ошибок
 -- ============================================================================
 
 -- ===== НАСТРОЙКИ (ИЗМЕНИТЕ ПОД СВОЁ ОБОРУДОВАНИЕ) =====
 local PROPS = {
-    FL = "propeller_bearing_0",
-    FR = "propeller_bearing_1",
-    BL = "propeller_bearing_2",
-    BR = "propeller_bearing_3"
+    FL = "propeller_bearing_0",   -- передний левый
+    FR = "propeller_bearing_1",   -- передний правый
+    BL = "propeller_bearing_2",   -- задний левый
+    BR = "propeller_bearing_3"    -- задний правый
 }
 local GIMBAL = "gimbal_sensor_0"
 local ALT = "altitude_sensor_0"
 local MONITOR = "monitor_0"
 
--- ⚠️ ВАЖНО: укажите стороны, к которым подключены провода от вашего пульта
-local SIDE_FORWARD = "front"   -- сигнал 0-15 при наклоне ВПЕРЁД
-local SIDE_BACKWARD = "back"   -- сигнал 0-15 при наклоне НАЗАД
-local SIDE_LEFT = "left"       -- сигнал 0-15 при наклоне ВЛЕВО
-local SIDE_RIGHT = "right"     -- сигнал 0-15 при наклоне ВПРАВО
+-- Стороны для чтения аналогового редстоуна (0-15) от пульта
+local SIDE_FORWARD = "front"   -- сигнал при наклоне вперёд
+local SIDE_BACKWARD = "back"   -- сигнал при наклоне назад
+local SIDE_LEFT = "left"       -- сигнал при наклоне влево
+local SIDE_RIGHT = "right"     -- сигнал при наклоне вправо
 
--- Максимальный угол наклона в градусах (при сигнале 15)
+-- Максимальный угол наклона в градусах (при полном отклонении)
 local MAX_ANGLE = 30
 
--- Мёртвая зона для результирующего сигнала (от 0 до 1)
--- Например, 0.05 означает, что отклонение менее 5% игнорируется
+-- Мёртвая зона для нормированного отклонения (0.05 = 5%)
 local DEAD_ZONE = 0.05
 
 -- Коэффициенты PID (подберите под свой дрон)
@@ -32,6 +33,9 @@ local PID = {
     roll  = { P = 2.0, D = 0.5 },
     alt   = { P = 1.0, D = 0.2 }
 }
+
+-- Базовая тяга для висения (подберите экспериментально)
+local BASE_THRUST = 0.55
 -- ============================================================
 
 -- Вспомогательные функции
@@ -39,42 +43,63 @@ local function clamp(val, min, max)
     return math.max(min, math.min(max, val))
 end
 
-local function getPeripheral(name, expectedType)
-    local p = peripheral.find(name)
+-- Безопасное подключение периферии с проверкой
+local function safeWrap(name)
+    local p = peripheral.wrap(name)
     if not p then
-        error("not found: " .. name .. " (need: " .. expectedType .. ")")
+        error("Устройство не найдено: " .. name)
     end
     return p
 end
 
--- Подключаем устройства
-local fl = getPeripheral(PROPS.FL, "propeller_bearing")
-local fr = getPeripheral(PROPS.FR, "propeller_bearing")
-local bl = getPeripheral(PROPS.BL, "propeller_bearing")
-local br = getPeripheral(PROPS.BR, "propeller_bearing")
-local gimbal = getPeripheral(GIMBAL, "gimbal_sensor")
-local altSensor = getPeripheral(ALT, "altitude_sensor")
+-- ---- Подключаем устройства ----
+local fl = safeWrap(PROPS.FL)
+local fr = safeWrap(PROPS.FR)
+local bl = safeWrap(PROPS.BL)
+local br = safeWrap(PROPS.BR)
+local gimbal = safeWrap(GIMBAL)
+local altSensor = safeWrap(ALT)
 local monitor = peripheral.wrap(MONITOR)
+
 if monitor then
     monitor.setTextScale(0.5)
     monitor.clear()
 end
 
-print("all good")
+print("=== Все устройства найдены ===")
 
--- Переменные для PID
+-- ---- Определяем рабочий метод для altitude_sensor ----
+local function getAltitudeSafe()
+    -- Пробуем несколько возможных имён методов
+    local possibleMethods = {"getAltitude", "getAltitudeData", "getAlt", "getHeight"}
+    for _, method in ipairs(possibleMethods) do
+        local success, result = pcall(function()
+            return altSensor[method]()
+        end)
+        if success and type(result) == "table" and result.altitude ~= nil then
+            return result   -- нашли рабочий метод
+        end
+    end
+    -- Если ничего не подошло – выводим предупреждение и возвращаем заглушку
+    print("Предупреждение: не удалось получить высоту. Использую заглушку (0 метров).")
+    return { altitude = 0, verticalSpeed = 0 }
+end
+
+-- ---- Инициализация переменных PID ----
 local prevErrPitch = 0
 local prevErrRoll = 0
 local prevErrAlt = 0
-local targetAlt = nil
+local targetAlt = nil   -- будет установлен при первом измерении
 
--- Переменные для FPS
+-- ---- Переменные для FPS ----
 local lastTime = os.clock()
 local frameCount = 0
 local fps = 0
 local fpsTimer = lastTime
 
--- Главный цикл
+print("Автопилот запущен. Управляйте джойстиком!")
+
+-- ===== ГЛАВНЫЙ ЦИКЛ =====
 while true do
     local now = os.clock()
     local dt = now - lastTime
@@ -87,11 +112,11 @@ while true do
     local sigLft = redstone.getAnalogInput(SIDE_LEFT)
     local sigRgt = redstone.getAnalogInput(SIDE_RIGHT)
 
-    -- ---- Преобразуем в нормированные отклонения [-1 .. +1] ----
-    local netPitch = (sigFwd - sigBwd) / 15   -- +1 = полный вперёд, -1 = полный назад
-    local netRoll  = (sigRgt - sigLft) / 15   -- +1 = полный вправо, -1 = полный влево
+    -- Преобразуем в нормированные отклонения [-1 .. +1]
+    local netPitch = (sigFwd - sigBwd) / 15
+    local netRoll  = (sigRgt - sigLft) / 15
 
-    -- Мёртвая зона (чтобы дрон не дрожал в центре)
+    -- Мёртвая зона
     if math.abs(netPitch) < DEAD_ZONE then netPitch = 0 end
     if math.abs(netRoll)  < DEAD_ZONE then netRoll  = 0 end
 
@@ -100,21 +125,27 @@ while true do
     local targetRoll  = netRoll  * MAX_ANGLE
 
     -- ---- Считываем датчики ----
-    local altData = altSensor.getAltitude()
+    local altData = getAltitudeSafe()
     local altitude = altData.altitude
-    local vertSpeed = altData.verticalSpeed
+    local vertSpeed = altData.verticalSpeed or 0
 
-    local gimbalData = gimbal.getAngles()
+    -- Получаем углы от гироскопа
+    local gimbalData = gimbal.getAngles()   -- должен быть метод getAngles
     local pitch = gimbalData.pitch
     local roll  = gimbalData.roll
 
-    -- Устанавливаем целевую высоту при первом замере
+    -- Устанавливаем целевую высоту при первом замере (если высота не 0)
     if targetAlt == nil then
-        targetAlt = altitude
-        print("Целевая высота установлена: " .. string.format("%.1f", targetAlt))
+        if altitude > 0.1 then
+            targetAlt = altitude
+        else
+            targetAlt = 5   -- фиксированная высота, если сенсор не работает
+            print("Высота не определена, установлена цель 5 м")
+        end
+        print("Целевая высота: " .. string.format("%.1f м", targetAlt))
     end
 
-    -- ---- PID ----
+    -- ---- PID-регуляторы ----
     local errPitch = targetPitch - pitch
     local errRoll  = targetRoll - roll
     local errAlt   = targetAlt - altitude
@@ -134,16 +165,15 @@ while true do
     local outAlt = pAlt + dAlt
     prevErrAlt = errAlt
 
-    local baseThrust = 0.55  -- подберите под вес дрона
-    local thrust = clamp(baseThrust + outAlt, 0.2, 0.9)
+    local thrust = clamp(BASE_THRUST + outAlt, 0.2, 0.9)
 
-    -- Смешение мощностей (X-конфигурация)
+    -- ---- Смешение мощностей (X-конфигурация) ----
     local powerFL = clamp(thrust + outRoll - outPitch, 0, 1)
     local powerFR = clamp(thrust - outRoll - outPitch, 0, 1)
     local powerBL = clamp(thrust + outRoll + outPitch, 0, 1)
     local powerBR = clamp(thrust - outRoll + outPitch, 0, 1)
 
-    -- ---- Параллельная отправка команд (для 20 Гц) ----
+    -- ---- Отправка команд на винты (параллельно для 20 Гц) ----
     parallel.waitForAll(
         function() fl.setThrust(true, powerFL) end,
         function() fr.setThrust(true, powerFR) end,
