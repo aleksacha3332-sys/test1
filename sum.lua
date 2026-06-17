@@ -1,6 +1,6 @@
 -- ============================================================================
---  QUADCOPTER WITH ROTATION SPEED CONTROLLERS (FIXED PERIPHERAL SEARCH)
---  Uses peripheral.getNames() to correctly find all controllers.
+--  QUADCOPTER WITH SMOOTH TARGET VALUES AND ALTITUDE CONTROL
+--  Uses Create_RotationSpeedController, auto-detects peripherals.
 -- ============================================================================
 
 -- ===== SETTINGS =====
@@ -8,7 +8,7 @@ local GIMBAL = "gimbal_sensor_0"
 local ALT = "altitude_sensor_0"
 local MONITOR = "monitor_0"
 
--- Redstone sides for the 4 analog inputs (0-15) from your controller
+-- Redstone sides for 4 analog inputs (0-15) from controller
 local SIDE_FORWARD = "front"
 local SIDE_BACKWARD = "back"
 local SIDE_LEFT = "left"
@@ -28,9 +28,15 @@ local PID = {
 -- Base thrust for hovering (0..1)
 local BASE_THRUST = 0.55
 
--- Speed range (RPM) for motors
+-- Speed range (RPM)
 local MIN_RPM = 0
 local MAX_RPM = 256
+
+-- Smoothing factor (0..1), lower = smoother but slower
+local SMOOTH_FACTOR = 0.2
+
+-- Altitude step for keyboard control
+local ALT_STEP = 1.0
 -- ============================================================
 
 -- Helper functions
@@ -38,7 +44,6 @@ local function clamp(val, min, max)
     return math.max(min, math.min(max, val))
 end
 
--- Safe peripheral wrapping
 local function safeWrap(name)
     local p = peripheral.wrap(name)
     if not p then
@@ -47,35 +52,22 @@ local function safeWrap(name)
     return p
 end
 
--- ---- Find all Create_RotationSpeedController peripherals ----
+-- ---- Find all Create_RotationSpeedController ----
 local function findControllers()
     local controllers = {}
-    -- Get a list of ALL attached peripherals
     local allNames = peripheral.getNames()
-    
     for _, name in ipairs(allNames) do
-        -- Check if this peripheral is a Rotation Speed Controller
         if peripheral.getType(name) == "Create_RotationSpeedController" then
             local obj = peripheral.wrap(name)
             table.insert(controllers, {name = name, obj = obj})
         end
     end
-    
-    -- Sort controllers by name to have a consistent order
     table.sort(controllers, function(a, b) return a.name < b.name end)
-    
     if #controllers < 4 then
         error("Need at least 4 Create_RotationSpeedController, found " .. #controllers)
     end
-    
-    -- Take the first 4 controllers
-    local fl = controllers[1].obj
-    local fr = controllers[2].obj
-    local bl = controllers[3].obj
-    local br = controllers[4].obj
-    
-    print("Found controllers: " .. controllers[1].name .. ", " .. controllers[2].name .. ", " .. controllers[3].name .. ", " .. controllers[4].name)
-    return fl, fr, bl, br
+    print("Assigned: FL="..controllers[1].name.." FR="..controllers[2].name.." BL="..controllers[3].name.." BR="..controllers[4].name)
+    return controllers[1].obj, controllers[2].obj, controllers[3].obj, controllers[4].obj
 end
 
 -- ---- Connect peripherals ----
@@ -91,14 +83,12 @@ end
 
 print("=== All devices found ===")
 
--- ---- Prepare control functions for each controller ----
+-- ---- Prepare speed control functions ----
 local function makeSetSpeedFunction(controller)
-    -- Check if the method 'setTargetSpeed' exists
     if not controller.setTargetSpeed then
-        error("Controller does not have method 'setTargetSpeed'")
+        error("Controller missing setTargetSpeed method")
     end
     return function(rpm)
-        -- Correct call: controller.setTargetSpeed(rpm)
         controller.setTargetSpeed(rpm)
     end
 end
@@ -108,12 +98,12 @@ local setSpeedFR = makeSetSpeedFunction(fr)
 local setSpeedBL = makeSetSpeedFunction(bl)
 local setSpeedBR = makeSetSpeedFunction(br)
 
-print("Speed controllers ready. Using method: setTargetSpeed")
+print("Speed controllers ready.")
 
 -- ---- Safe altitude reading ----
 local function getAltitudeSafe()
-    local possibleMethods = {"getHeight", "getAltitude", "getAltitudeData", "getAlt"}
-    for _, method in ipairs(possibleMethods) do
+    local methods = {"getHeight", "getAltitude", "getAltitudeData", "getAlt"}
+    for _, method in ipairs(methods) do
         local success, result = pcall(function()
             return altSensor[method]()
         end)
@@ -130,7 +120,7 @@ local function getAltitudeSafe()
     return { altitude = 0, verticalSpeed = 0 }
 end
 
--- ---- Safe gimbal angles reading ----
+-- ---- Safe gimbal angles ----
 local function getGimbalAnglesSafe()
     local methods = {"getAngles", "getData", "getEuler", "getAngle"}
     for _, method in ipairs(methods) do
@@ -153,19 +143,22 @@ local function getGimbalAnglesSafe()
     return { pitch = 0, roll = 0 }
 end
 
--- ---- PID state ----
+-- ---- State variables ----
 local prevErrPitch = 0
 local prevErrRoll = 0
 local prevErrAlt = 0
-local targetAlt = nil
+local targetAlt = nil          -- raw target (set by user)
+local smoothAlt = nil          -- smoothed target altitude
+local smoothPitch = 0
+local smoothRoll = 0
 
--- ---- FPS ----
+-- ---- FPS counter ----
 local lastTime = os.clock()
 local frameCount = 0
 local fps = 0
 local fpsTimer = lastTime
 
-print("Autopilot started. Use joystick!")
+print("Autopilot started. Use W/S to adjust altitude, or joystick for tilt.")
 
 -- ===== MAIN LOOP =====
 while true do
@@ -174,7 +167,19 @@ while true do
     if dt <= 0 then dt = 0.001 end
     lastTime = now
 
-    -- ---- Read controller signals ----
+    -- ---- Keyboard input for altitude (non-blocking) ----
+    local event, key = os.pullEvent("key", 0)
+    if event == "key" then
+        if key == 17 then   -- W
+            targetAlt = (targetAlt or 0) + ALT_STEP
+            print("Target altitude set to: " .. string.format("%.1f", targetAlt))
+        elseif key == 31 then -- S
+            targetAlt = math.max(1, (targetAlt or 0) - ALT_STEP)
+            print("Target altitude set to: " .. string.format("%.1f", targetAlt))
+        end
+    end
+
+    -- ---- Read redstone signals ----
     local sigFwd = redstone.getAnalogInput(SIDE_FORWARD)
     local sigBwd = redstone.getAnalogInput(SIDE_BACKWARD)
     local sigLft = redstone.getAnalogInput(SIDE_LEFT)
@@ -186,8 +191,8 @@ while true do
     if math.abs(netPitch) < DEAD_ZONE then netPitch = 0 end
     if math.abs(netRoll)  < DEAD_ZONE then netRoll  = 0 end
 
-    local targetPitch = netPitch * MAX_ANGLE
-    local targetRoll  = netRoll  * MAX_ANGLE
+    local rawTargetPitch = netPitch * MAX_ANGLE
+    local rawTargetRoll  = netRoll  * MAX_ANGLE
 
     -- ---- Read sensors ----
     local altData = getAltitudeSafe()
@@ -198,6 +203,7 @@ while true do
     local pitch = gimbalData.pitch
     local roll  = gimbalData.roll
 
+    -- Initialize target altitude on first valid reading
     if targetAlt == nil then
         if altitude > 0.1 then
             targetAlt = altitude
@@ -206,12 +212,23 @@ while true do
             print("Altitude unknown, target set to 5 m")
         end
         print("Target altitude: " .. string.format("%.1f m", targetAlt))
+        smoothAlt = targetAlt
     end
 
+    -- ---- Smooth target values ----
+    smoothPitch = smoothPitch + (rawTargetPitch - smoothPitch) * SMOOTH_FACTOR
+    smoothRoll  = smoothRoll  + (rawTargetRoll  - smoothRoll)  * SMOOTH_FACTOR
+    if smoothAlt == nil then smoothAlt = targetAlt end
+    smoothAlt = smoothAlt + (targetAlt - smoothAlt) * SMOOTH_FACTOR
+
+    local usedPitch = smoothPitch
+    local usedRoll  = smoothRoll
+    local usedAlt   = smoothAlt
+
     -- ---- PID ----
-    local errPitch = targetPitch - pitch
-    local errRoll  = targetRoll - roll
-    local errAlt   = targetAlt - altitude
+    local errPitch = usedPitch - pitch
+    local errRoll  = usedRoll - roll
+    local errAlt   = usedAlt - altitude
 
     local pPitch = PID.pitch.P * errPitch
     local dPitch = PID.pitch.D * ((errPitch - prevErrPitch) / dt)
@@ -230,7 +247,7 @@ while true do
 
     local thrust = clamp(BASE_THRUST + outAlt, 0.2, 0.9)
 
-    -- ---- Mixer (X-configuration) ----
+    -- ---- Mixer (X-config) ----
     local powerFL = clamp(thrust + outRoll - outPitch, 0, 1)
     local powerFR = clamp(thrust - outRoll - outPitch, 0, 1)
     local powerBL = clamp(thrust + outRoll + outPitch, 0, 1)
@@ -255,22 +272,24 @@ while true do
         monitor.setCursorPos(1,1)
         monitor.write("=== QUADCOPTER STATUS ===")
         monitor.setCursorPos(1,2)
-        monitor.write(string.format("Pitch: % 6.1f° (target % 6.1f°)", pitch, targetPitch))
+        monitor.write(string.format("Pitch: % 6.1f° (target % 6.1f°)", pitch, usedPitch))
         monitor.setCursorPos(1,3)
-        monitor.write(string.format("Roll:  % 6.1f° (target % 6.1f°)", roll, targetRoll))
+        monitor.write(string.format("Roll:  % 6.1f° (target % 6.1f°)", roll, usedRoll))
         monitor.setCursorPos(1,4)
         monitor.write(string.format("Alt: % 6.1fm  VSpd: % 5.1f m/s", altitude, vertSpeed))
         monitor.setCursorPos(1,5)
-        monitor.write("--- Motor RPM ---")
+        monitor.write(string.format("Target Alt: % 6.1fm", usedAlt))
         monitor.setCursorPos(1,6)
-        monitor.write(string.format("FL: %4.0f  FR: %4.0f", rpmFL, rpmFR))
+        monitor.write("--- Motor RPM ---")
         monitor.setCursorPos(1,7)
-        monitor.write(string.format("BL: %4.0f  BR: %4.0f", rpmBL, rpmBR))
+        monitor.write(string.format("FL: %4.0f  FR: %4.0f", rpmFL, rpmFR))
         monitor.setCursorPos(1,8)
-        monitor.write(string.format("Stick: F%d B%d  L%d R%d", sigFwd, sigBwd, sigLft, sigRgt))
+        monitor.write(string.format("BL: %4.0f  BR: %4.0f", rpmBL, rpmBR))
         monitor.setCursorPos(1,9)
-        monitor.write(string.format("Net: P%+.2f R%+.2f", netPitch, netRoll))
+        monitor.write(string.format("Stick: F%d B%d  L%d R%d", sigFwd, sigBwd, sigLft, sigRgt))
         monitor.setCursorPos(1,10)
+        monitor.write(string.format("Net: P%+.2f R%+.2f", netPitch, netRoll))
+        monitor.setCursorPos(1,11)
         monitor.write(string.format("FPS: %d", fps))
     end
 
