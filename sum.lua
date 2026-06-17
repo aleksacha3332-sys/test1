@@ -1,15 +1,9 @@
 -- ============================================================================
---  QUADCOPTER WITH ROTATION SPEED CONTROLLERS
---  Uses Create's RotationSpeedController to set propeller RPM
+--  QUADCOPTER WITH ROTATION SPEED CONTROLLERS (AUTO-DETECT)
+--  Automatically finds all RotationSpeedController peripherals
 -- ============================================================================
 
--- ===== SETTINGS (CHANGE TO YOUR DEVICE NAMES) =====
-local PROPS = {
-    FL = "rotation_speed_controller_0",   -- front left
-    FR = "rotation_speed_controller_1",   -- front right
-    BL = "rotation_speed_controller_2",   -- back left
-    BR = "rotation_speed_controller_3"    -- back right
-}
+-- ===== SETTINGS =====
 local GIMBAL = "gimbal_sensor_0"
 local ALT = "altitude_sensor_0"
 local MONITOR = "monitor_0"
@@ -53,11 +47,32 @@ local function safeWrap(name)
     return p
 end
 
+-- ---- Auto-detect RotationSpeedController peripherals ----
+local function findControllers()
+    -- Find all peripherals that are RotationSpeedController
+    local controllers = {}
+    for name, obj in pairs(peripheral.find("RotationSpeedController")) do
+        table.insert(controllers, {name = name, obj = obj})
+    end
+    -- Sort by name to have consistent order
+    table.sort(controllers, function(a, b) return a.name < b.name end)
+    
+    if #controllers < 4 then
+        error("Need at least 4 RotationSpeedController, found " .. #controllers)
+    end
+    
+    -- Take first 4
+    local fl = controllers[1].obj
+    local fr = controllers[2].obj
+    local bl = controllers[3].obj
+    local br = controllers[4].obj
+    
+    print("Found controllers: " .. controllers[1].name .. ", " .. controllers[2].name .. ", " .. controllers[3].name .. ", " .. controllers[4].name)
+    return fl, fr, bl, br
+end
+
 -- ---- Connect peripherals ----
-local fl = safeWrap(PROPS.FL)
-local fr = safeWrap(PROPS.FR)
-local bl = safeWrap(PROPS.BL)
-local br = safeWrap(PROPS.BR)
+local fl, fr, bl, br = findControllers()
 local gimbal = safeWrap(GIMBAL)
 local altSensor = safeWrap(ALT)
 local monitor = peripheral.wrap(MONITOR)
@@ -97,10 +112,11 @@ local setSpeedFR = makeSetSpeedFunction(fr)
 local setSpeedBL = makeSetSpeedFunction(bl)
 local setSpeedBR = makeSetSpeedFunction(br)
 
-print("Speed controllers detected successfully.")
+print("Speed controllers ready.")
 
 -- ---- Safe altitude reading ----
 local function getAltitudeSafe()
+    -- Try getHeight first (official from wiki)
     local possibleMethods = {"getHeight", "getAltitude", "getAltitudeData", "getAlt"}
     for _, method in ipairs(possibleMethods) do
         local success, result = pcall(function()
