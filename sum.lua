@@ -1,107 +1,188 @@
--- ==========================================
--- НАСТРОЙКА ВХОДОВ (Ваш пульт управления)
--- ==========================================
-local inputSides = {
-  G   = "left",    -- Крен влево (на ПК)
-  B   = "right",   -- Крен вправо (на ПК)
-  V   = "front",   -- Тангаж вперед (на ПК)
-  A   = "back",    -- Тангаж назад (на ПК)
-  Y_L = "bottom",  -- Поворот влево (на ПК, снизу)
-  
-  -- Y_R перенесен! Теперь мы не опрашиваем верх ПК ("top").
-  -- Вместо этого мы будем считывать сигнал прямо через блок Реле 0.
+-- ============================================================================
+--  КВАДРОКОПТЕР С ДВУХОСЕВЫМ ПУЛЬТОМ (4 аналоговых выхода: вперёд/назад/влево/вправо)
+-- ============================================================================
+
+-- ===== НАСТРОЙКИ (ИЗМЕНИТЕ ПОД СВОЁ ОБОРУДОВАНИЕ) =====
+local PROPS = {
+    FL = "propeller_bearing_0",
+    FR = "propeller_bearing_1",
+    BL = "propeller_bearing_2",
+    BR = "propeller_bearing_3"
 }
+local GIMBAL = "gimbal_sensor_0"
+local ALT = "altitude_sensor_0"
+local MONITOR = "monitor_0"
 
--- ==========================================
--- ПОДКЛЮЧЕНИЕ РЕДСТОУН РЕЛЕ
--- ==========================================
--- ВАЖНО: Для работы новой схемы Реле 0 должно стоять вплотную к компьютеру!
-local relay0 = peripheral.wrap("redstone_relay_0") -- УСКОРЕНИЕ (Макс. 10)
-local relay1 = peripheral.wrap("redstone_relay_1") -- ЗАМЕДЛЕНИЕ (0 - нет, 15 - стоп)
-local relay2 = peripheral.wrap("redstone_relay_2") -- РЕВЕРС ТЯГИ (0 - выкл, 15 - вкл)
+-- ⚠️ ВАЖНО: укажите стороны, к которым подключены провода от вашего пульта
+local SIDE_FORWARD = "front"   -- сигнал 0-15 при наклоне ВПЕРЁД
+local SIDE_BACKWARD = "back"   -- сигнал 0-15 при наклоне НАЗАД
+local SIDE_LEFT = "left"       -- сигнал 0-15 при наклоне ВЛЕВО
+local SIDE_RIGHT = "right"     -- сигнал 0-15 при наклоне ВПРАВО
 
--- Проверка подключения устройств
-if not relay0 or not relay1 or not relay2 then
-  print("[ОШИБКА]: Одно из трех Реле не найдено!")
-  return
+-- Максимальный угол наклона в градусах (при сигнале 15)
+local MAX_ANGLE = 30
+
+-- Мёртвая зона для результирующего сигнала (от 0 до 1)
+-- Например, 0.05 означает, что отклонение менее 5% игнорируется
+local DEAD_ZONE = 0.05
+
+-- Коэффициенты PID (подберите под свой дрон)
+local PID = {
+    pitch = { P = 2.0, D = 0.5 },
+    roll  = { P = 2.0, D = 0.5 },
+    alt   = { P = 1.0, D = 0.2 }
+}
+-- ============================================================
+
+-- Вспомогательные функции
+local function clamp(val, min, max)
+    return math.max(min, math.min(max, val))
 end
-print("[ГОТОВО]: Все 3 реле подключены. Физика Yaw перенаправлена на Реле 0!")
 
--- Направление выходов на реле
-local outputSides = {
-  out1 = "front",
-  out2 = "back",
-  out3 = "left",
-  out4 = "right"
-}
-
--- ==========================================
--- ФУНКЦИЯ УПРАВЛЕНИЯ ОДНИМ МОТОРОМ
--- ==========================================
-local function setMotor(side, out_val, is_idle)
-  if is_idle then
-    -- РЕЖИМ ХОВЕРА: Кнопок не жмем — глушим газ, зажимаем тормоз
-    relay0.setAnalogOutput(side, 0)
-    relay1.setAnalogOutput(side, 15)
-    relay2.setAnalogOutput(side, 0)
-  else
-    -- Режим активного полета
-    if out_val > 0 then
-      -- 1. Набор мощности (Ограничение до 10)
-      local accel = math.min(out_val, 10)
-      relay0.setAnalogOutput(side, accel)
-      relay1.setAnalogOutput(side, 0)
-      relay2.setAnalogOutput(side, 0)
-      
-    elseif out_val < 0 then
-      -- 2. Активный реверс при резком развороте
-      local accel = math.min(math.abs(out_val), 10)
-      relay0.setAnalogOutput(side, accel)
-      relay1.setAnalogOutput(side, 0)
-      relay2.setAnalogOutput(side, 15)
-      
-    else
-      -- 3. Нейтральная передача (Дрейф)
-      relay0.setAnalogOutput(side, 0)
-      relay1.setAnalogOutput(side, 0)
-      relay2.setAnalogOutput(side, 0)
+local function getPeripheral(name, expectedType)
+    local p = peripheral.find(name)
+    if not p then
+        error("not found: " .. name .. " (need: " .. expectedType .. ")")
     end
-  end
+    return p
 end
 
--- ==========================================
--- ГЛАВНЫЙ ПОЛЕТНЫЙ ЦИКЛ
--- ==========================================
+-- Подключаем устройства
+local fl = getPeripheral(PROPS.FL, "propeller_bearing")
+local fr = getPeripheral(PROPS.FR, "propeller_bearing")
+local bl = getPeripheral(PROPS.BL, "propeller_bearing")
+local br = getPeripheral(PROPS.BR, "propeller_bearing")
+local gimbal = getPeripheral(GIMBAL, "gimbal_sensor")
+local altSensor = getPeripheral(ALT, "altitude_sensor")
+local monitor = peripheral.wrap(MONITOR)
+if monitor then
+    monitor.setTextScale(0.5)
+    monitor.clear()
+end
+
+print("all good")
+
+-- Переменные для PID
+local prevErrPitch = 0
+local prevErrRoll = 0
+local prevErrAlt = 0
+local targetAlt = nil
+
+-- Переменные для FPS
+local lastTime = os.clock()
+local frameCount = 0
+local fps = 0
+local fpsTimer = lastTime
+
+-- Главный цикл
 while true do
-  -- Считываем стандартные аналоговые сигналы с корпуса ПК
-  local a = redstone.getAnalogInput(inputSides.A)
-  local b = redstone.getAnalogInput(inputSides.B)
-  local v = redstone.getAnalogInput(inputSides.V)
-  local g = redstone.getAnalogInput(inputSides.G)
-  local yaw_l = redstone.getAnalogInput(inputSides.Y_L)
-  
-  -- НОВАЯ ЛОГИКА: Считываем сигнал Y_R, который приходит на ВЕРХУШКУ Редстоун Реле 0.
-  -- Функция подтягивает уровень сигнала, проходящего через блок периферии.
-  local yaw_r = relay0.getAnalogInput("top") 
-  
-  -- Считаем общую силу поворота вокруг оси
-  local yaw = yaw_r - yaw_l 
-  
-  -- Проверяем, отпущен ли пульт управления
-  local is_idle = (a == 0 and b == 0 and v == 0 and g == 0 and yaw_l == 0 and yaw_r == 0)
+    local now = os.clock()
+    local dt = now - lastTime
+    if dt <= 0 then dt = 0.001 end
+    lastTime = now
 
-  -- Вычисляем результирующую матрицу для каждого винта
-  local out1_val = a + g + yaw
-  local out2_val = a + b - yaw
-  local out3_val = b + v + yaw
-  local out4_val = v + g - yaw
+    -- ---- Считываем 4 сигнала с пульта (каждый 0..15) ----
+    local sigFwd = redstone.getAnalogInput(SIDE_FORWARD)
+    local sigBwd = redstone.getAnalogInput(SIDE_BACKWARD)
+    local sigLft = redstone.getAnalogInput(SIDE_LEFT)
+    local sigRgt = redstone.getAnalogInput(SIDE_RIGHT)
 
-  -- Передаем значения на моторы через функцию распределения по реле
-  setMotor(outputSides.out1, out1_val, is_idle)
-  setMotor(outputSides.out2, out2_val, is_idle)
-  setMotor(outputSides.out3, out3_val, is_idle)
-  setMotor(outputSides.out4, out4_val, is_idle)
+    -- ---- Преобразуем в нормированные отклонения [-1 .. +1] ----
+    local netPitch = (sigFwd - sigBwd) / 15   -- +1 = полный вперёд, -1 = полный назад
+    local netRoll  = (sigRgt - sigLft) / 15   -- +1 = полный вправо, -1 = полный влево
 
-  -- Задержка в 1 тик сервера для предотвращения лагов
-  os.sleep(0.05)
+    -- Мёртвая зона (чтобы дрон не дрожал в центре)
+    if math.abs(netPitch) < DEAD_ZONE then netPitch = 0 end
+    if math.abs(netRoll)  < DEAD_ZONE then netRoll  = 0 end
+
+    -- Целевые углы (градусы)
+    local targetPitch = netPitch * MAX_ANGLE
+    local targetRoll  = netRoll  * MAX_ANGLE
+
+    -- ---- Считываем датчики ----
+    local altData = altSensor.getAltitude()
+    local altitude = altData.altitude
+    local vertSpeed = altData.verticalSpeed
+
+    local gimbalData = gimbal.getAngles()
+    local pitch = gimbalData.pitch
+    local roll  = gimbalData.roll
+
+    -- Устанавливаем целевую высоту при первом замере
+    if targetAlt == nil then
+        targetAlt = altitude
+        print("Целевая высота установлена: " .. string.format("%.1f", targetAlt))
+    end
+
+    -- ---- PID ----
+    local errPitch = targetPitch - pitch
+    local errRoll  = targetRoll - roll
+    local errAlt   = targetAlt - altitude
+
+    local pPitch = PID.pitch.P * errPitch
+    local dPitch = PID.pitch.D * ((errPitch - prevErrPitch) / dt)
+    local outPitch = pPitch + dPitch
+    prevErrPitch = errPitch
+
+    local pRoll = PID.roll.P * errRoll
+    local dRoll = PID.roll.D * ((errRoll - prevErrRoll) / dt)
+    local outRoll = pRoll + dRoll
+    prevErrRoll = errRoll
+
+    local pAlt = PID.alt.P * errAlt
+    local dAlt = PID.alt.D * ((errAlt - prevErrAlt) / dt)
+    local outAlt = pAlt + dAlt
+    prevErrAlt = errAlt
+
+    local baseThrust = 0.55  -- подберите под вес дрона
+    local thrust = clamp(baseThrust + outAlt, 0.2, 0.9)
+
+    -- Смешение мощностей (X-конфигурация)
+    local powerFL = clamp(thrust + outRoll - outPitch, 0, 1)
+    local powerFR = clamp(thrust - outRoll - outPitch, 0, 1)
+    local powerBL = clamp(thrust + outRoll + outPitch, 0, 1)
+    local powerBR = clamp(thrust - outRoll + outPitch, 0, 1)
+
+    -- ---- Параллельная отправка команд (для 20 Гц) ----
+    parallel.waitForAll(
+        function() fl.setThrust(true, powerFL) end,
+        function() fr.setThrust(true, powerFR) end,
+        function() bl.setThrust(true, powerBL) end,
+        function() br.setThrust(true, powerBR) end
+    )
+
+    -- ---- Вывод на монитор ----
+    if monitor then
+        monitor.clear()
+        monitor.setCursorPos(1,1)
+        monitor.write("=== QUADCOPTER STATUS ===")
+        monitor.setCursorPos(1,2)
+        monitor.write(string.format("Pitch: % 6.1f° (target % 6.1f°)", pitch, targetPitch))
+        monitor.setCursorPos(1,3)
+        monitor.write(string.format("Roll:  % 6.1f° (target % 6.1f°)", roll, targetRoll))
+        monitor.setCursorPos(1,4)
+        monitor.write(string.format("Alt: % 6.1fm  VSpd: % 5.1f m/s", altitude, vertSpeed))
+        monitor.setCursorPos(1,5)
+        monitor.write("--- Motor Powers ---")
+        monitor.setCursorPos(1,6)
+        monitor.write(string.format("FL: %5.1f%%  FR: %5.1f%%", powerFL*100, powerFR*100))
+        monitor.setCursorPos(1,7)
+        monitor.write(string.format("BL: %5.1f%%  BR: %5.1f%%", powerBL*100, powerBR*100))
+        monitor.setCursorPos(1,8)
+        monitor.write(string.format("Stick: F%d B%d  L%d R%d", sigFwd, sigBwd, sigLft, sigRgt))
+        monitor.setCursorPos(1,9)
+        monitor.write(string.format("Net: P%+.2f R%+.2f", netPitch, netRoll))
+        monitor.setCursorPos(1,10)
+        monitor.write(string.format("FPS: %d", fps))
+    end
+
+    -- ---- Счётчик FPS ----
+    frameCount = frameCount + 1
+    if now - fpsTimer >= 1 then
+        fps = frameCount
+        frameCount = 0
+        fpsTimer = now
+    end
+
+    sleep(0.01)
 end
