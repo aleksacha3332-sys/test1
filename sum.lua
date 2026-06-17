@@ -1,6 +1,6 @@
 -- ============================================================================
---  QUADCOPTER WITH ROTATION SPEED CONTROLLERS (FIXED CALL SYNTAX)
---  Uses correct method call: controller.setTargetSpeed(rpm)
+--  QUADCOPTER WITH ROTATION SPEED CONTROLLERS (FIXED PERIPHERAL SEARCH)
+--  Uses peripheral.getNames() to correctly find all controllers.
 -- ============================================================================
 
 -- ===== SETTINGS =====
@@ -50,15 +50,25 @@ end
 -- ---- Find all Create_RotationSpeedController peripherals ----
 local function findControllers()
     local controllers = {}
-    for name, obj in pairs(peripheral.find("Create_RotationSpeedController")) do
-        table.insert(controllers, {name = name, obj = obj})
+    -- Get a list of ALL attached peripherals
+    local allNames = peripheral.getNames()
+    
+    for _, name in ipairs(allNames) do
+        -- Check if this peripheral is a Rotation Speed Controller
+        if peripheral.getType(name) == "Create_RotationSpeedController" then
+            local obj = peripheral.wrap(name)
+            table.insert(controllers, {name = name, obj = obj})
+        end
     end
+    
+    -- Sort controllers by name to have a consistent order
     table.sort(controllers, function(a, b) return a.name < b.name end)
     
     if #controllers < 4 then
         error("Need at least 4 Create_RotationSpeedController, found " .. #controllers)
     end
     
+    -- Take the first 4 controllers
     local fl = controllers[1].obj
     local fr = controllers[2].obj
     local bl = controllers[3].obj
@@ -83,12 +93,12 @@ print("=== All devices found ===")
 
 -- ---- Prepare control functions for each controller ----
 local function makeSetSpeedFunction(controller)
-    -- Проверяем наличие метода setTargetSpeed
+    -- Check if the method 'setTargetSpeed' exists
     if not controller.setTargetSpeed then
         error("Controller does not have method 'setTargetSpeed'")
     end
     return function(rpm)
-        -- Правильный вызов: controller.setTargetSpeed(rpm)
+        -- Correct call: controller.setTargetSpeed(rpm)
         controller.setTargetSpeed(rpm)
     end
 end
