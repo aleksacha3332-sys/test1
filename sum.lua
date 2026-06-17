@@ -1,6 +1,6 @@
 -- ============================================================================
---  QUADCOPTER WITH ROTATION SPEED CONTROLLERS (FIXED)
---  Uses the correct method 'setTargetSpeed' as per the official wiki.
+--  QUADCOPTER WITH ROTATION SPEED CONTROLLERS (FIXED CALL SYNTAX)
+--  Uses correct method call: controller.setTargetSpeed(rpm)
 -- ============================================================================
 
 -- ===== SETTINGS =====
@@ -50,7 +50,6 @@ end
 -- ---- Find all Create_RotationSpeedController peripherals ----
 local function findControllers()
     local controllers = {}
-    -- The correct type name from the wiki is "Create_RotationSpeedController"[reference:4]
     for name, obj in pairs(peripheral.find("Create_RotationSpeedController")) do
         table.insert(controllers, {name = name, obj = obj})
     end
@@ -82,10 +81,15 @@ end
 
 print("=== All devices found ===")
 
--- The wiki confirms the method is 'setTargetSpeed'[reference:5]
+-- ---- Prepare control functions for each controller ----
 local function makeSetSpeedFunction(controller)
+    -- Проверяем наличие метода setTargetSpeed
+    if not controller.setTargetSpeed then
+        error("Controller does not have method 'setTargetSpeed'")
+    end
     return function(rpm)
-        controller.setTargetSpeed(controller, rpm)
+        -- Правильный вызов: controller.setTargetSpeed(rpm)
+        controller.setTargetSpeed(rpm)
     end
 end
 
