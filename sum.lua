@@ -1,6 +1,6 @@
 -- ============================================================================
---  QUADCOPTER WITH ROTATION SPEED CONTROLLERS (AUTO-DETECT)
---  Automatically finds all RotationSpeedController peripherals
+--  QUADCOPTER WITH ROTATION SPEED CONTROLLERS (FIXED)
+--  Uses the correct method 'setTargetSpeed' as per the official wiki.
 -- ============================================================================
 
 -- ===== SETTINGS =====
@@ -30,7 +30,7 @@ local BASE_THRUST = 0.55
 
 -- Speed range (RPM) for motors
 local MIN_RPM = 0
-local MAX_RPM = 256   -- adjust based on your drone's needs
+local MAX_RPM = 256
 -- ============================================================
 
 -- Helper functions
@@ -47,21 +47,19 @@ local function safeWrap(name)
     return p
 end
 
--- ---- Auto-detect RotationSpeedController peripherals ----
+-- ---- Find all Create_RotationSpeedController peripherals ----
 local function findControllers()
-    -- Find all peripherals that are RotationSpeedController
     local controllers = {}
-    for name, obj in pairs(peripheral.find("RotationSpeedController")) do
+    -- The correct type name from the wiki is "Create_RotationSpeedController"[reference:4]
+    for name, obj in pairs(peripheral.find("Create_RotationSpeedController")) do
         table.insert(controllers, {name = name, obj = obj})
     end
-    -- Sort by name to have consistent order
     table.sort(controllers, function(a, b) return a.name < b.name end)
     
     if #controllers < 4 then
-        error("Need at least 4 RotationSpeedController, found " .. #controllers)
+        error("Need at least 4 Create_RotationSpeedController, found " .. #controllers)
     end
     
-    -- Take first 4
     local fl = controllers[1].obj
     local fr = controllers[2].obj
     local bl = controllers[3].obj
@@ -84,26 +82,10 @@ end
 
 print("=== All devices found ===")
 
--- ---- Auto-detect method for setting speed on RotationSpeedController ----
-local function getSpeedControlMethod(controller)
-    local candidates = {"setTargetSpeed", "setSpeed", "set", "setRPM"}
-    for _, method in ipairs(candidates) do
-        if controller[method] and type(controller[method]) == "function" then
-            -- Test with dummy call
-            local success, err = pcall(function() controller[method](controller, 100) end)
-            if success then
-                return method
-            end
-        end
-    end
-    error("No recognized speed control method found for controller: " .. tostring(controller))
-end
-
--- ---- Prepare control functions for each controller ----
+-- The wiki confirms the method is 'setTargetSpeed'[reference:5]
 local function makeSetSpeedFunction(controller)
-    local method = getSpeedControlMethod(controller)
     return function(rpm)
-        controller[method](controller, rpm)
+        controller.setTargetSpeed(controller, rpm)
     end
 end
 
@@ -112,11 +94,10 @@ local setSpeedFR = makeSetSpeedFunction(fr)
 local setSpeedBL = makeSetSpeedFunction(bl)
 local setSpeedBR = makeSetSpeedFunction(br)
 
-print("Speed controllers ready.")
+print("Speed controllers ready. Using method: setTargetSpeed")
 
 -- ---- Safe altitude reading ----
 local function getAltitudeSafe()
-    -- Try getHeight first (official from wiki)
     local possibleMethods = {"getHeight", "getAltitude", "getAltitudeData", "getAlt"}
     for _, method in ipairs(possibleMethods) do
         local success, result = pcall(function()
@@ -241,13 +222,12 @@ while true do
     local powerBL = clamp(thrust + outRoll + outPitch, 0, 1)
     local powerBR = clamp(thrust - outRoll + outPitch, 0, 1)
 
-    -- Convert power (0..1) to RPM
     local rpmFL = MIN_RPM + powerFL * (MAX_RPM - MIN_RPM)
     local rpmFR = MIN_RPM + powerFR * (MAX_RPM - MIN_RPM)
     local rpmBL = MIN_RPM + powerBL * (MAX_RPM - MIN_RPM)
     local rpmBR = MIN_RPM + powerBR * (MAX_RPM - MIN_RPM)
 
-    -- ---- Send RPM commands in parallel ----
+    -- ---- Send RPM commands ----
     parallel.waitForAll(
         function() setSpeedFL(rpmFL) end,
         function() setSpeedFR(rpmFR) end,
