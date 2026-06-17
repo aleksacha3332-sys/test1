@@ -1,6 +1,6 @@
 -- ============================================================================
 --  QUADCOPTER FOR CREATE: AVIONICS
---  Fully robust to missing sensor methods, English console output
+--  Auto-detects propeller control method, English output
 -- ============================================================================
 
 -- ===== SETTINGS (CHANGE TO YOUR DEVICE NAMES) =====
@@ -66,6 +66,46 @@ if monitor then
 end
 
 print("=== All devices found ===")
+
+-- ---- Auto-detect method for setting propeller thrust ----
+local function getPropellerControlMethod(prop)
+    -- List of possible method names to set thrust/power/speed
+    local candidates = {"setThrust", "setSpeed", "setPower", "setTargetThrust", "setThrustPercent", "set"}
+    for _, method in ipairs(candidates) do
+        if prop[method] and type(prop[method]) == "function" then
+            -- Test with a dummy call to see if it works
+            local success, err = pcall(function() prop[method](prop, true, 0.5) end)
+            if success then
+                return method
+            end
+            -- Try without the boolean parameter (some may accept just a number)
+            success, err = pcall(function() prop[method](prop, 0.5) end)
+            if success then
+                return method, false   -- second return indicates no boolean needed
+            end
+        end
+    end
+    error("No recognized control method found for propeller: " .. tostring(prop))
+end
+
+-- ---- Prepare control functions for each propeller ----
+local function makeSetFunction(prop)
+    local method, needsBool = getPropellerControlMethod(prop)
+    return function(value)
+        if needsBool == false then
+            prop[method](prop, value)
+        else
+            prop[method](prop, true, value)   -- assume boolean first param
+        end
+    end
+end
+
+local setFL = makeSetFunction(fl)
+local setFR = makeSetFunction(fr)
+local setBL = makeSetFunction(bl)
+local setBR = makeSetFunction(br)
+
+print("Propeller control methods detected successfully.")
 
 -- ---- Safe altitude reading ----
 local function getAltitudeSafe()
@@ -192,12 +232,12 @@ while true do
     local powerBL = clamp(thrust + outRoll + outPitch, 0, 1)
     local powerBR = clamp(thrust - outRoll + outPitch, 0, 1)
 
-    -- ---- Send motor commands in parallel (for 20 Hz) ----
+    -- ---- Send motor commands in parallel (using auto-detected methods) ----
     parallel.waitForAll(
-        function() fl.setThrust(true, powerFL) end,
-        function() fr.setThrust(true, powerFR) end,
-        function() bl.setThrust(true, powerBL) end,
-        function() br.setThrust(true, powerBR) end
+        function() setFL(powerFL) end,
+        function() setFR(powerFR) end,
+        function() setBL(powerBL) end,
+        function() setBR(powerBR) end
     )
 
     -- ---- Display on monitor ----
