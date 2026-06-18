@@ -25,7 +25,7 @@ local CONFIG = {
 -- Поиск монитора
 local monitor = peripheral.find("monitor")
 if not monitor then
-    error("Монитор не найден! Подключите монитор к компьютеру.")
+    error("monitor not found.")
 end
 monitor.setTextScale(0.5)
 monitor.clear()
@@ -34,23 +34,23 @@ monitor.setCursorPos(1, 1)
 -- Поиск пушки
 local cannon = peripheral.find("cannon_mount")
 if not cannon then
-    error("Пушка не найдена! Убедитесь, что она подключена к компьютеру.")
+    error("cannon not found")
 end
 
 -- Включаем компьютерное управление
 cannon.setComputerControl(true)
-print("✓ Компьютерное управление включено")
+print("auto cannon true")
 
 -- Поиск навигационного стола
 local navTable = peripheral.find("navigation_table")
 if not navTable then
-    print("⚠ Навигационный стол не найден. Для работы с целями требуется Create Avionics.")
+    print("⚠ navigation table not found.")
 end
 
 -- Поиск GPS (опционально)
 local gps = peripheral.find("gps")
 if gps then
-    print("✓ GPS найден")
+    print("✓ GPS true")
 end
 
 -- ============================================
