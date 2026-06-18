@@ -2,12 +2,13 @@
 -- Artillery Fire Control System with Ballistics
 -- Uses CC:CBC (Cannon Mount) and Create Avionics
 -- Speed input in m/s, gravity in m/s²
+-- Monitor updates every 1 second
 -- ============================================
 
 local CONFIG = {
     cannonPeripheral = "cannon_mount_0",   -- adjust if needed
     monitorSide = "top",
-    updateInterval = 5,                    -- ticks between monitor redraws
+    updateInterval = 20,                   -- 20 ticks = 1 second
     minPitch = -90,
     maxPitch = 90,
     gravity_mps2 = 20                     -- standard Minecraft gravity (blocks/s²)
@@ -27,7 +28,15 @@ monitor.clear()
 
 local cannon = peripheral.find("cannon_mount")
 if not cannon then error("Cannon mount not found!") end
+
+-- Enable computer control and verify
 cannon.setComputerControl(true)
+local isCC = cannon.isComputerControl()
+if isCC then
+    print("Computer control enabled successfully.")
+else
+    print("WARNING: Computer control could not be enabled.")
+end
 
 local navTable = peripheral.find("navigation_table")
 if navTable then print("Navigation table detected (optional)") end
@@ -156,6 +165,9 @@ local function aimAtTarget()
 
     state.targetPitch = pitch
     cannon.setTargetAngles(yaw, pitch)
+    
+    -- Optional: verify that angles were applied (debug)
+    -- print("Set yaw="..yaw.." pitch="..pitch)
     return true, "OK"
 end
 
