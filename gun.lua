@@ -1,52 +1,56 @@
 -- ============================================
--- Артиллерийская система с баллистикой (скорость в м/с)
+-- Artillery Fire Control System with Ballistics
+-- Uses CC:CBC (Cannon Mount) and Create Avionics
+-- Speed input in m/s, gravity in m/s²
 -- ============================================
 
 local CONFIG = {
-    cannonPeripheral = "cannon_mount_0",
+    cannonPeripheral = "cannon_mount_0",   -- adjust if needed
     monitorSide = "top",
-    updateInterval = 5,
+    updateInterval = 5,                    -- ticks between monitor redraws
     minPitch = -90,
     maxPitch = 90,
-    -- Гравитация в м/с² (стандарт Minecraft ~20, но можно изменить под свой мод)
-    gravity_mps2 = 20
+    gravity_mps2 = 20                     -- standard Minecraft gravity (blocks/s²)
 }
 
--- Пересчёт гравитации в блоки/тик²
-local GRAVITY_BPT2 = CONFIG.gravity_mps2 / 400  -- т.к. 1 тик² = 1/400 с²
+-- Convert gravity to blocks/tick² (1 tick = 1/20 s)
+local GRAVITY_BPT2 = CONFIG.gravity_mps2 / 400
 
 -- ============================================
--- Инициализация периферии
+-- Peripheral initialisation
 -- ============================================
 
 local monitor = peripheral.find("monitor")
-if not monitor then error("Монитор не найден!") end
+if not monitor then error("Monitor not found!") end
 monitor.setTextScale(0.5)
 monitor.clear()
 
 local cannon = peripheral.find("cannon_mount")
-if not cannon then error("Пушка не найдена!") end
+if not cannon then error("Cannon mount not found!") end
 cannon.setComputerControl(true)
 
+local navTable = peripheral.find("navigation_table")
+if navTable then print("Navigation table detected (optional)") end
+
 -- ============================================
--- Состояние системы
+-- System state
 -- ============================================
 
 local state = {
-    position = { x = 0, y = 0, z = 0 },
-    target   = { x = nil, y = nil, z = nil },
+    position   = { x = 0, y = 0, z = 0 },
+    target     = { x = nil, y = nil, z = nil },
     currentYaw   = 0,
     currentPitch = 0,
     targetYaw    = 0,
     targetPitch  = 0,
     isAssembled  = false,
-    speed_mps    = 80,            -- скорость в м/с (пользовательская)
-    speed_bpt    = 80 / 20,       -- внутренняя скорость в блоках/тик
+    speed_mps    = 80,                  -- user‑visible speed (m/s)
+    speed_bpt    = 80 / 20,             -- internal speed (blocks/tick)
     lastUpdate   = 0
 }
 
 -- ============================================
--- Вспомогательные функции
+-- Utility functions
 -- ============================================
 
 local function normalizeAngle(angle)
@@ -81,15 +85,16 @@ local function calculateYaw(from, to)
 end
 
 -- ============================================
--- Баллистический расчёт (внутренние единицы: блоки и тики)
+-- Ballistic pitch calculation (internal units: blocks & ticks)
+-- Returns pitch in degrees, or nil if target is unreachable
 -- ============================================
 
 local function calculateBallisticPitch(from, to, v_bpt, g_bpt2)
     local dx = to.x - from.x
     local dy = to.y - from.y
     local dz = to.z - from.z
-    local d = math.sqrt(dx*dx + dz*dz)
-    local h = dy
+    local d = math.sqrt(dx*dx + dz*dz)   -- horizontal distance
+    local h = dy                         -- height difference (positive = target above)
 
     if d < 0.001 then
         if h > 0 then return 90 else return -90 end
@@ -100,7 +105,7 @@ local function calculateBallisticPitch(from, to, v_bpt, g_bpt2)
     local discriminant = v2 * v2 - g_bpt2 * (g_bpt2 * d * d + 2 * h * v2)
 
     if discriminant < 0 then
-        return nil
+        return nil   -- target cannot be reached with this speed
     end
 
     local sqrtDisc = math.sqrt(discriminant)
@@ -115,7 +120,7 @@ local function calculateBallisticPitch(from, to, v_bpt, g_bpt2)
 end
 
 -- ============================================
--- Управление пушкой
+-- Cannon control functions
 -- ============================================
 
 local function updateCannonInfo()
@@ -132,13 +137,12 @@ end
 
 local function aimAtTarget()
     if not state.target.x or not state.target.y or not state.target.z then
-        return false, "Цель не задана"
+        return false, "No target set"
     end
 
     local yaw = calculateYaw(state.position, state.target)
     state.targetYaw = yaw
 
-    -- Используем внутреннюю скорость в блоках/тик
     local pitch = calculateBallisticPitch(
         state.position,
         state.target,
@@ -147,7 +151,7 @@ local function aimAtTarget()
     )
 
     if not pitch then
-        return false, string.format("Цель недостижима при скорости %.1f м/с", state.speed_mps)
+        return false, string.format("Target unreachable at %.1f m/s", state.speed_mps)
     end
 
     state.targetPitch = pitch
@@ -156,11 +160,11 @@ local function aimAtTarget()
 end
 
 local function fire()
-    if not state.isAssembled then return false, "Пушка не собрана" end
+    if not state.isAssembled then return false, "Cannon is not assembled" end
     cannon.fire(true)
     sleep(0.1)
     cannon.fire(false)
-    return true, "Выстрел!"
+    return true, "Fired!"
 end
 
 local function assemble(enable)
@@ -170,7 +174,7 @@ local function assemble(enable)
 end
 
 -- ============================================
--- Отрисовка монитора (скорость в м/с)
+-- Monitor display (all messages in English)
 -- ============================================
 
 local function drawUI()
@@ -179,7 +183,7 @@ local function drawUI()
     monitor.setTextColor(colors.cyan)
     monitor.write("╔═══════════════════════════════════════╗")
     monitor.setCursorPos(1, 2)
-    monitor.write("║     АРТИЛЛЕРИЙСКАЯ СИСТЕМА          ║")
+    monitor.write("║     ARTILLERY FIRE CONTROL           ║")
     monitor.setCursorPos(1, 3)
     monitor.write("╚═══════════════════════════════════════╝")
 
@@ -187,16 +191,16 @@ local function drawUI()
 
     monitor.setTextColor(colors.white)
     monitor.setCursorPos(1, line)
-    monitor.write("📌 СТАТУС:")
+    monitor.write("STATUS:")
     line = line + 1
     monitor.setTextColor(state.isAssembled and colors.green or colors.red)
     monitor.setCursorPos(3, line)
-    monitor.write("Собрана: " .. tostring(state.isAssembled))
+    monitor.write("Assembled: " .. tostring(state.isAssembled))
     line = line + 1
 
     monitor.setTextColor(colors.white)
     monitor.setCursorPos(1, line)
-    monitor.write("📍 ПОЗИЦИЯ:")
+    monitor.write("POSITION:")
     line = line + 1
     monitor.setTextColor(colors.yellow)
     monitor.setCursorPos(3, line)
@@ -206,40 +210,40 @@ local function drawUI()
 
     monitor.setTextColor(colors.white)
     monitor.setCursorPos(1, line)
-    monitor.write("🎯 ПАРАМЕТРЫ:")
+    monitor.write("PARAMETERS:")
     line = line + 1
     monitor.setTextColor(colors.yellow)
     monitor.setCursorPos(3, line)
     monitor.write(string.format("Yaw: %7.2f°  Pitch: %5.2f°", state.currentYaw, state.currentPitch))
     line = line + 1
     monitor.setCursorPos(3, line)
-    monitor.write(string.format("Скорость: %5.1f м/с", state.speed_mps))
+    monitor.write(string.format("Speed: %5.1f m/s", state.speed_mps))
     line = line + 1
 
     if state.target.x then
         monitor.setTextColor(colors.green)
         monitor.setCursorPos(3, line)
-        monitor.write(string.format("Целевой Yaw: %7.2f°", state.targetYaw))
+        monitor.write(string.format("Target Yaw: %7.2f°", state.targetYaw))
         line = line + 1
         monitor.setCursorPos(3, line)
-        monitor.write(string.format("Целевой Pitch: %5.2f°", state.targetPitch))
+        monitor.write(string.format("Target Pitch: %5.2f°", state.targetPitch))
         line = line + 1
 
         local dist = getDistance(state.position, state.target)
         monitor.setTextColor(colors.white)
         monitor.setCursorPos(1, line)
-        monitor.write("📏 ДИСТАНЦИЯ:")
+        monitor.write("DISTANCE:")
         line = line + 1
         monitor.setTextColor(colors.lime)
         monitor.setCursorPos(3, line)
-        monitor.write(string.format("%7.1f блоков", dist))
+        monitor.write(string.format("%7.1f blocks", dist))
         line = line + 1
     end
 
     monitor.setTextColor(colors.white)
     monitor.setCursorPos(1, line)
     if state.target.x then
-        monitor.write("🎯 ЦЕЛЬ:")
+        monitor.write("TARGET:")
         line = line + 1
         monitor.setTextColor(colors.orange)
         monitor.setCursorPos(3, line)
@@ -247,19 +251,19 @@ local function drawUI()
             state.target.x, state.target.y, state.target.z))
     else
         monitor.setTextColor(colors.gray)
-        monitor.write("🎯 ЦЕЛЬ НЕ ЗАДАНА")
+        monitor.write("NO TARGET SET")
     end
     line = line + 1
 
     monitor.setTextColor(colors.gray)
     monitor.setCursorPos(1, 20)
-    monitor.write("Команды: target <x> <y> <z> | speed <м/с> | fire")
+    monitor.write("Commands: target <x> <y> <z> | speed <m/s> | fire")
     monitor.setCursorPos(1, 21)
-    monitor.write("         assemble [on/off] | status | help | exit")
+    monitor.write("          assemble [on/off] | status | help | exit")
 end
 
 -- ============================================
--- Обработка команд
+-- Command processor (all output in English)
 -- ============================================
 
 local function processCommand(input)
@@ -272,26 +276,26 @@ local function processCommand(input)
     local cmd = args[1]:lower()
 
     if cmd == "help" then
-        print("Доступные команды:")
-        print("  target <x> <y> <z>   - установить цель")
-        print("  speed <значение>     - задать скорость в м/с")
-        print("  fire                 - выстрелить")
-        print("  assemble [on/off]    - собрать/разобрать пушку")
-        print("  status               - показать статус")
-        print("  exit                 - выход")
+        print("Available commands:")
+        print("  target <x> <y> <z>   - set target coordinates")
+        print("  speed <value>        - set projectile speed in m/s")
+        print("  fire                 - fire the cannon")
+        print("  assemble [on/off]    - assemble/disassemble the cannon")
+        print("  status               - show current status")
+        print("  exit                 - exit program")
         return true
     end
 
     if cmd == "target" then
         if #args < 4 then
-            print("Использование: target <x> <y> <z>")
+            print("Usage: target <x> <y> <z>")
             return true
         end
         local x = tonumber(args[2])
         local y = tonumber(args[3])
         local z = tonumber(args[4])
         if not x or not y or not z then
-            print("Ошибка: координаты должны быть числами")
+            print("Error: coordinates must be numbers")
             return true
         end
         state.target.x = x
@@ -300,32 +304,32 @@ local function processCommand(input)
 
         local success, msg = aimAtTarget()
         if success then
-            print("✓ Цель установлена: (" .. x .. ", " .. y .. ", " .. z .. ")")
+            print("Target set: (" .. x .. ", " .. y .. ", " .. z .. ")")
             print("  Yaw: " .. string.format("%.2f", state.targetYaw) .. "°")
             print("  Pitch: " .. string.format("%.2f", state.targetPitch) .. "°")
         else
-            print("✗ " .. msg)
+            print("Error: " .. msg)
         end
         return true
     end
 
     if cmd == "speed" then
         if #args < 2 then
-            print("Текущая скорость: " .. state.speed_mps .. " м/с")
+            print("Current speed: " .. state.speed_mps .. " m/s")
             return true
         end
         local v_mps = tonumber(args[2])
         if not v_mps or v_mps <= 0 then
-            print("Ошибка: скорость должна быть положительным числом")
+            print("Error: speed must be a positive number")
             return true
         end
         state.speed_mps = v_mps
-        state.speed_bpt = v_mps / 20   -- пересчёт в блоки/тик
-        print("✓ Скорость установлена: " .. v_mps .. " м/с")
+        state.speed_bpt = v_mps / 20
+        print("Speed set to " .. v_mps .. " m/s")
         if state.target.x then
             local success, msg = aimAtTarget()
             if not success then
-                print("⚠ " .. msg)
+                print("Warning: " .. msg)
             end
         end
         return true
@@ -333,7 +337,7 @@ local function processCommand(input)
 
     if cmd == "fire" then
         local success, msg = fire()
-        print(success and "✓ " .. msg or "✗ " .. msg)
+        print(success and "OK: " .. msg or "Error: " .. msg)
         return true
     end
 
@@ -345,48 +349,48 @@ local function processCommand(input)
             elseif args[2] == "off" or args[2] == "false" or args[2] == "0" then
                 enable = false
             else
-                print("Использование: assemble [on/off]")
+                print("Usage: assemble [on/off]")
                 return true
             end
         else
             enable = not state.isAssembled
         end
         local result = assemble(enable)
-        print(result and "✓ Пушка " .. (enable and "собрана" or "разобрана") or "✗ Ошибка")
+        print(result and "Cannon " .. (enable and "assembled" or "disassembled") or "Error")
         return true
     end
 
     if cmd == "status" then
-        print("=== СТАТУС СИСТЕМЫ ===")
-        print(string.format("Позиция: (%.1f, %.1f, %.1f)", state.position.x, state.position.y, state.position.z))
-        print(string.format("Углы: Yaw=%.2f°, Pitch=%.2f°", state.currentYaw, state.currentPitch))
-        print("Собрана: " .. tostring(state.isAssembled))
-        print("Скорость: " .. state.speed_mps .. " м/с")
+        print("=== SYSTEM STATUS ===")
+        print(string.format("Position: (%.1f, %.1f, %.1f)", state.position.x, state.position.y, state.position.z))
+        print(string.format("Angles: Yaw=%.2f°, Pitch=%.2f°", state.currentYaw, state.currentPitch))
+        print("Assembled: " .. tostring(state.isAssembled))
+        print("Speed: " .. state.speed_mps .. " m/s")
         if state.target.x then
-            print(string.format("Цель: (%.1f, %.1f, %.1f)", state.target.x, state.target.y, state.target.z))
-            print("Расстояние: " .. string.format("%.1f", getDistance(state.position, state.target)))
+            print(string.format("Target: (%.1f, %.1f, %.1f)", state.target.x, state.target.y, state.target.z))
+            print("Distance: " .. string.format("%.1f", getDistance(state.position, state.target)))
         else
-            print("Цель: не задана")
+            print("Target: not set")
         end
         return true
     end
 
     if cmd == "exit" then
-        print("Завершение работы...")
+        print("Shutting down...")
         cannon.setComputerControl(false)
         return false
     end
 
-    print("Неизвестная команда. Введите 'help' для списка.")
+    print("Unknown command. Type 'help' for list.")
     return true
 end
 
 -- ============================================
--- Основной цикл
+-- Main loop
 -- ============================================
 
-print("=== Артиллерийская система (скорость в м/с) ===")
-print("Введите 'help' для списка команд")
+print("=== Artillery Fire Control System ===")
+print("Type 'help' for commands")
 print("")
 
 local running = true
@@ -412,4 +416,4 @@ while running do
 end
 
 cannon.setComputerControl(false)
-print("Программа завершена.")
+print("Program terminated.")
