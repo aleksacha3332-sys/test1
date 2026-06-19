@@ -1,4 +1,4 @@
--- ============================================
+
 -- Artillery Fire Control System with Ballistics
 -- Uses CC:CBC (Cannon Mount) and Create Avionics
 -- Speed input in m/s, gravity in m/s²
