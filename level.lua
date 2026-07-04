@@ -1,96 +1,82 @@
---[[
-  monitor.lua - Отслеживание уровня жидкости в бочке Create
-  Использует периферийный API ComputerCraft и мод CC:C Bridge
-]]
+-- monitor.lua - Monitor Create barrel fluid level and output redstone signal
+-- Uses peripheral API to find any tank (supports modems via peripheral.find)
 
--- === НАСТРОЙКИ (измени под себя) ===
-local barrelSide = "right"    -- С какой стороны от компьютера находится бочка
-local redstoneSide = "back"   -- На какую сторону подавать редстоун-сигнал
-local threshold = 80.0        -- Порог срабатывания в процентах (0-100)
-local checkInterval = 1.0     -- Интервал проверки в секундах
--- ===================================
+-- Settings
+local redstoneSide = "back"   -- side to output redstone signal
+local threshold = 80.0        -- trigger level in percent (0-100)
+local checkInterval = 1.0     -- check interval in seconds
 
--- Функция для получения уровня жидкости в процентах
+-- Function to get fluid level percentage from a tank peripheral
 local function getBarrelLevel(peripheral)
-    -- Пытаемся получить информацию о всех ёмкостях (танках) в блоке
+    if not peripheral.tanks then
+        return nil
+    end
     local tanks = peripheral.tanks()
     if not tanks or #tanks == 0 then
         return nil
     end
-
-    -- Суммируем всю жидкость (на случай, если у бочки несколько слотов)
     local totalAmount = 0
     local totalCapacity = 0
     for _, tank in ipairs(tanks) do
-        if tank then -- проверяем, что слот не пустой
+        if tank then
             totalAmount = totalAmount + (tank.amount or 0)
             totalCapacity = totalCapacity + (tank.capacity or 0)
         end
     end
-
     if totalCapacity == 0 then
         return 0
     end
-
     return (totalAmount / totalCapacity) * 100
 end
 
--- Основной цикл программы
+-- Main function
 local function main()
-    print("Подключение к бочке...")
+    print("Searching for a fluid tank peripheral...")
+    -- Find any peripheral that has a 'tanks' method (Create barrel, tank, etc.)
+    local barrel = nil
+    for _, name in ipairs(peripheral.getNames()) do
+        local p = peripheral.wrap(name)
+        if p and p.tanks then
+            barrel = p
+            print("Found tank: " .. name)
+            break
+        end
+    end
 
-    -- Подключаемся к бочке как к периферии
-    local barrel = peripheral.wrap(barrelSide)
     if not barrel then
-        print("ОШИБКА: Бочка не найдена на стороне " .. barrelSide)
-        print("Убедитесь, что установлен мод CC:C Bridge.")
+        print("ERROR: No fluid tank found. Make sure CC:C Bridge is installed and tank is connected (via modem if needed).")
         return
     end
 
-    -- Проверяем, есть ли у бочки метод tanks() (признак, что это ёмкость)
-    if not barrel.tanks then
-        print("ОШИБКА: Блок на стороне " .. barrelSide .. " не является ёмкостью.")
-        return
-    end
+    print("Monitoring started. Threshold: " .. threshold .. "%")
+    print("Press Ctrl+T to stop.")
 
-    print("Начинаем мониторинг. Порог: " .. threshold .. "%")
-    print("Для остановки нажмите Ctrl+T")
-
-    -- Переменная для хранения предыдущего состояния сигнала
     local signalActive = false
 
     while true do
         local level = getBarrelLevel(barrel)
-
         if level == nil then
-            print("ОШИБКА: Не удалось получить уровень жидкости.")
+            print("ERROR: Failed to get fluid level.")
             break
         end
 
-        -- Проверяем, достигнут ли порог
         local shouldSignal = level >= threshold
 
-        -- Подаём сигнал, только если состояние изменилось
         if shouldSignal ~= signalActive then
             if shouldSignal then
-                print(string.format("Достигнут порог! Уровень: %.1f%%", level))
+                print(string.format("Threshold reached! Level: %.1f%%", level))
             else
-                print(string.format("Уровень упал ниже порога: %.1f%%", level))
+                print(string.format("Level dropped below threshold: %.1f%%", level))
             end
-
-            -- Подаём сигнал на указанную сторону
             redstone.setOutput(redstoneSide, shouldSignal)
             signalActive = shouldSignal
         end
 
-        -- Ждём перед следующей проверкой
         sleep(checkInterval)
     end
 
-    -- Выключаем сигнал при завершении программы
     redstone.setOutput(redstoneSide, false)
-    print("Программа остановлена.")
+    print("Program stopped.")
 end
 
--- Запускаем программу
 main()
