@@ -1,22 +1,10 @@
---[[
-    Стабилизатор ракеты через CC: Redstone Link Bridge.
-    Использует sendLinkSignal(freq1, freq2, strength) для управления двигателями.
-    Гироскоп – gimbal_sensor из Create: Avionics.
---]]
+-- Rocket stabilizer using CC: Redstone Link Bridge
+-- Uses sendLinkSignal(freq1, freq2, strength)
+-- Gyro: gimbal_sensor from Create: Avionics
 
--- =============================================
--- НАСТРОЙКА ЧАСТОТ (ИЗМЕНИТЕ ПРИ НЕОБХОДИМОСТИ)
--- =============================================
-local FREQ1 = 1   -- Первая частота (общая для всех приёмников)
--- Вторая частота (freq2) будет уникальной для каждого входа двигателя.
--- Ниже в таблице channels мы задаём эти уникальные номера.
+local FREQ1 = 1
 
--- =============================================
--- НАСТРОЙКА КАНАЛОВ (ВТОРЫХ ЧАСТОТ)
--- =============================================
--- Каждому входу каждого двигателя присваиваем УНИКАЛЬНЫЙ номер (от 1 до ...).
--- Пример: передний двигатель: вход "вверх" -> канал 1, "вниз" -> 2, "влево" -> 3, "вправо" -> 4, "сила" -> 5
--- и т.д. Всего 4 двигателя * 5 входов = 20 каналов.
+-- Assign unique channel numbers for each engine input
 local channels = {
     front = { up = 1, down = 2, left = 3, right = 4, thrust = 5 },
     back  = { up = 6, down = 7, left = 8, right = 9, thrust = 10 },
@@ -24,141 +12,119 @@ local channels = {
     right = { up = 16, down = 17, left = 18, right = 19, thrust = 20 }
 }
 
--- =============================================
--- ПАРАМЕТРЫ ПИД-РЕГУЛЯТОРА (НАСТРАИВАЮТСЯ ЭКСПЕРИМЕНТАЛЬНО)
--- =============================================
-local Kp = 0.6   -- Пропорциональный коэффициент
-local Ki = 0.02  -- Интегральный
-local Kd = 0.15  -- Дифференциальный
+-- PID coefficients (tune later)
+local Kp = 0.6
+local Ki = 0.02
+local Kd = 0.15
 
--- =============================================
--- ОСТАЛЬНЫЕ НАСТРОЙКИ
--- =============================================
 local TARGET_PITCH = 0
 local TARGET_ROLL = 0
-local THRUST = 5        -- Базовая сила для боковых двигателей (0-15)
-local MAIN_THRUST = 15  -- Сила центрального двигателя
-local DT = 0.05         -- Шаг цикла (сек)
-local MAX_ANGLE = 30    -- Максимальный угол отклонения сопла (градусы)
+local THRUST = 5          -- base thrust for side engines
+local MAIN_THRUST = 15    -- central engine power
+local DT = 0.05           -- control loop period (seconds)
+local MAX_ANGLE = 30      -- max nozzle deflection (degrees)
 
--- =============================================
--- ПОИСК ПЕРИФЕРИИ
--- =============================================
--- 1. Гироскоп
+-- Find peripherals
 local gyro = peripheral.find("gimbal_sensor")
-if not gyro then
-    error("Гироскоп (gimbal_sensor) не найден!")
-end
-print("Гироскоп найден.")
+if not gyro then error("Gyro not found!") end
+print("Gyro found.")
 
--- 2. Redstone Link Bridge (периферия с методами sendLinkSignal и getLinkSignal)
 local linkBridge = peripheral.find("redstone_link_bridge")
-if not linkBridge then
-    error("Redstone Link Bridge не найден! Убедитесь, что он подключён к компьютеру.")
-end
-print("Redstone Link Bridge найден.")
+if not linkBridge then error("Redstone Link Bridge not found!") end
+print("Redstone Link Bridge found.")
 
--- =============================================
--- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
--- =============================================
--- Отправка сигнала на пару частот (freq1, freq2)
+-- Helper functions
 local function send_signal(channel, value)
     if not channel then return end
     local signal = math.floor(math.max(0, math.min(15, value)))
     linkBridge.sendLinkSignal(FREQ1, channel, signal)
 end
 
--- Ограничение значения
 local function clamp(val, min_val, max_val)
     return math.max(min_val, math.min(max_val, val))
 end
 
--- =============================================
--- ТЕСТОВЫЕ КОМАНДЫ (для проверки подключения)
--- =============================================
+-- Test function for a single engine
 local function test_engine(name, dir_channel, thrust_channel)
-    print("Тест двигателя: " .. name)
-    print("  Устанавливаю силу = 5")
-    send_signal(thrust_channel, 5)
+    print("Testing: " .. name)
+    send_signal(thrust_channel, 5)   -- small thrust
     sleep(1)
-    print("  Отклоняю сопло (сигнал = 15)")
-    send_signal(dir_channel, 15)
+    send_signal(dir_channel, 15)     -- max deflection
     sleep(2)
-    print("  Возвращаю сопло в центр (сигнал = 0)")
-    send_signal(dir_channel, 0)
+    send_signal(dir_channel, 0)      -- center
     sleep(1)
-    print("  Выключаю силу (сигнал = 0)")
-    send_signal(thrust_channel, 0)
+    send_signal(thrust_channel, 0)   -- off
     print("---")
 end
 
--- Запуск всех тестов
-function run_tests()
-    print("===== ЗАПУСК ТЕСТОВ ДВИГАТЕЛЕЙ =====")
-    print("ВНИМАНИЕ! Убедитесь, что ракета НЕ МОЖЕТ УЛЕТЕТЬ!")
-    print("Тест продлится около 15 секунд.")
-    sleep(2)
-
-    test_engine("Передний (вверх)", channels.front.up, channels.front.thrust)
-    test_engine("Задний (вниз)", channels.back.down, channels.back.thrust)
-    test_engine("Левый (влево)", channels.left.left, channels.left.thrust)
-    test_engine("Правый (вправо)", channels.right.right, channels.right.thrust)
-
-    print("===== ТЕСТЫ ЗАВЕРШЕНЫ =====")
-    print("Проверьте визуально, что каждый двигатель отклонился в нужную сторону.")
+-- Run all tests
+local function run_tests()
+    print("===== ENGINE TESTS START =====")
+    print("Each engine will: turn on, deflect, return, turn off.")
+    sleep(1)
+    test_engine("Front (up)", channels.front.up, channels.front.thrust)
+    test_engine("Back (down)", channels.back.down, channels.back.thrust)
+    test_engine("Left (left)", channels.left.left, channels.left.thrust)
+    test_engine("Right (right)", channels.right.right, channels.right.thrust)
+    print("===== TESTS COMPLETE =====")
 end
 
--- =============================================
--- ОСНОВНАЯ ФУНКЦИЯ СТАБИЛИЗАЦИИ
--- =============================================
-local integral_p = 0
-local integral_r = 0
-local prev_error_p = 0
-local prev_error_r = 0
+-- Ask user whether to run tests (with timeout)
+print("Press any key to run engine tests, or wait 5 seconds to skip.")
+local event = os.pullEvent("key")
+if event then
+    run_tests()
+else
+    print("Skipping tests.")
+end
 
--- Устанавливаем базовую тягу для всех боковых двигателей
+-- Set base thrust for side engines
 send_signal(channels.front.thrust, THRUST)
 send_signal(channels.back.thrust, THRUST)
 send_signal(channels.left.thrust, THRUST)
 send_signal(channels.right.thrust, THRUST)
 
--- Включаем центральный двигатель через обычный редстоун-выход (сторона "bottom")
+-- Start central engine (via redstone on "bottom")
 redstone.setAnalogOutput("bottom", MAIN_THRUST)
-print("Центральный двигатель включён на мощность " .. MAIN_THRUST)
+print("Central engine ON at power " .. MAIN_THRUST)
 
-print("Стабилизатор запущен. Для остановки нажмите Ctrl+T.")
-print("Для запуска тестов введите: run_tests()")
+print("Stabilizer running. Press Ctrl+T to stop.")
 
--- Основной цикл
+-- PID state variables
+local integral_p = 0
+local integral_r = 0
+local prev_error_p = 0
+local prev_error_r = 0
+
+-- Main control loop
 while true do
-    -- 1. Получаем углы с гироскопа
-    local angles = { gyro.getAngles() }
+    -- Get angles from gyro (returns table {pitch, roll})
+    local angles = gyro.getAngles()
     local pitch = angles[1] or 0
     local roll = angles[2] or 0
 
-    -- 2. Ошибки
     local error_p = TARGET_PITCH - pitch
     local error_r = TARGET_ROLL - roll
 
-    -- 3. ПИД для тангажа
+    -- Pitch PID
     integral_p = integral_p + error_p * DT
     integral_p = clamp(integral_p, -50, 50)
     local derivative_p = (error_p - prev_error_p) / DT
     local control_p = Kp * error_p + Ki * integral_p + Kd * derivative_p
     prev_error_p = error_p
 
-    -- 4. ПИД для крена
+    -- Roll PID
     integral_r = integral_r + error_r * DT
     integral_r = clamp(integral_r, -50, 50)
     local derivative_r = (error_r - prev_error_r) / DT
     local control_r = Kp * error_r + Ki * integral_r + Kd * derivative_r
     prev_error_r = error_r
 
-    -- 5. Ограничение управляющих сигналов
+    -- Clamp control outputs
     control_p = clamp(control_p, -MAX_ANGLE, MAX_ANGLE)
     control_r = clamp(control_r, -MAX_ANGLE, MAX_ANGLE)
 
-    -- 6. Преобразование в сигналы 0-15
+    -- Convert angle to signal (0-15)
     local function angle_to_signal(angle)
         return (angle / MAX_ANGLE) * 15
     end
@@ -168,24 +134,20 @@ while true do
     local left_signal = angle_to_signal(control_r)
     local right_signal = angle_to_signal(-control_r)
 
-    -- 7. Отправка сигналов на двигатели
-    -- Передний (вход "вверх" для тангажа)
+    -- Send to engines
     send_signal(channels.front.up, front_signal)
     send_signal(channels.front.down, 0)
 
-    -- Задний (вход "вниз" для тангажа)
     send_signal(channels.back.down, back_signal)
     send_signal(channels.back.up, 0)
 
-    -- Левый (вход "влево" для крена)
     send_signal(channels.left.left, left_signal)
     send_signal(channels.left.right, 0)
 
-    -- Правый (вход "вправо" для крена)
     send_signal(channels.right.right, right_signal)
     send_signal(channels.right.left, 0)
 
-    -- 8. Отладка (опционально)
+    -- Optional debug output (uncomment if needed)
     -- print(string.format("P: %6.2f  R: %6.2f  cP: %6.2f  cR: %6.2f",
     --       pitch, roll, control_p, control_r))
 
