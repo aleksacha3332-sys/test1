@@ -2,14 +2,14 @@
 -- Uses sendLinkSignal(freq1, freq2, strength)
 -- Gyro: gimbal_sensor from Create: Avionics
 
-local FREQ1 = 1
+local FREQ1 = "powergrid:generator_induction_rotor"
 
 -- Assign unique channel numbers for each engine input
 local channels = {
-    front = { up = 1, down = 2, left = 3, right = 4, thrust = 5 },
-    back  = { up = 6, down = 7, left = 8, right = 9, thrust = 10 },
-    left  = { up = 11, down = 12, left = 13, right = 14, thrust = 15 },
-    right = { up = 16, down = 17, left = 18, right = 19, thrust = 20 }
+    front = { up = 'minecraft:black_dye", down = "minecraft:cherry_sapling", left = "minecraft:cobblestone", right = "powergrid:wire_connector", thrust = "minecraft:compass" },
+    back  = { up = "minecraft:light_gray_dye", down = "create:iron_sheet", left = "create:experience_block", right = "create_connected:parallel_gearbox", thrust = "minecraft:compass" },
+    left  = { up = "minecraft:white_dye", down = 'create_connected:fluid_vessel", left = "minecraft:bread", right = "create:large_cogwheel", thrust = "minecraft:compass" },
+    right = { up = "minecraft:bone_meal", down = "minecraft:stick", left = "minecraft:dirt", right = "create_connected:parallel_gearbox", thrust = "minecraft:compass" }
 }
 
 -- PID coefficients (tune later)
