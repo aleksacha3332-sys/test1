@@ -6,10 +6,10 @@ local FREQ1 = "powergrid:generator_induction_rotor"
 
 -- Assign unique channel numbers for each engine input
 local channels = {
-    front = { up = 'minecraft:black_dye", down = "minecraft:cherry_sapling", left = "minecraft:cobblestone", right = "powergrid:wire_connector", thrust = "minecraft:compass" },
-    back  = { up = "minecraft:light_gray_dye", down = "create:iron_sheet", left = "create:experience_block", right = "create_connected:parallel_gearbox", thrust = "minecraft:compass" },
-    left  = { up = "minecraft:white_dye", down = 'create_connected:fluid_vessel", left = "minecraft:bread", right = "create:large_cogwheel", thrust = "minecraft:compass" },
-    right = { up = "minecraft:bone_meal", down = "minecraft:stick", left = "minecraft:dirt", right = "create_connected:parallel_gearbox", thrust = "minecraft:compass" }
+    front = { up = 'minecraft:black_dye", down = "minecraft:cherry_sapling", left = "minecraft:cobblestone", right = "powergrid:wire_connector", thrust = "minecraft:blue_dye" },
+    back  = { up = "minecraft:light_gray_dye", down = "create:iron_sheet", left = "create:experience_block", right = "create_connected:parallel_gearbox", thrust = "minecraft:blue_dye" },
+    left  = { up = "minecraft:white_dye", down = 'create_connected:fluid_vessel", left = "minecraft:bread", right = "create:large_cogwheel", thrust = "minecraft:blue_dye" },
+    right = { up = "minecraft:bone_meal", down = "minecraft:stick", left = "minecraft:dirt", right = "create_connected:parallel_gearbox", thrust = "minecraft:blue_dye" }
 }
 
 -- PID coefficients (tune later)
