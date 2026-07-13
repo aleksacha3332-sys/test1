@@ -2,47 +2,42 @@
 -- Uses distance, bearing, and vertical offset to calculate absolute position
 
 -- ============================================
--- CONFIGURATION (EDIT THESE VALUES)
+-- CONFIGURATION
 -- ============================================
--- Frequencies are item IDs (strings)
-local FREQ1 = 'powergrid:generator_induction_rotor'   -- YOUR first frequency
+local FREQ1 = 'powergrid:generator_induction_rotor'
 
 local channels = {
-    front = { thrust = 'minecraft:blue_dye' },        -- YOUR second frequency for front
-    back  = { thrust = 'minecraft:light_gray_dye' },  -- YOUR second frequency for back
-    left  = { thrust = 'minecraft:white_dye' },       -- YOUR second frequency for left
-    right = { thrust = 'minecraft:black_dye' }        -- YOUR second frequency for right
+    front = { thrust = 'minecraft:blue_dye' },
+    back  = { thrust = 'minecraft:light_gray_dye' },
+    left  = { thrust = 'minecraft:white_dye' },
+    right = { thrust = 'minecraft:black_dye' }
 }
 
 -- Target altitude (Y) to hover at
-local TARGET_ALTITUDE = 100   -- change to your desired height
+local TARGET_ALTITUDE = 100
 
 -- Target position (X, Z) – set this to your launch point
-local TARGET_X = 0            -- change to your launch X
-local TARGET_Z = 0            -- change to your launch Z
+local TARGET_X = 0
+local TARGET_Z = 0
 
--- PID coefficients (tune as needed)
--- Altitude
+-- PID coefficients
 local Kp_y = 0.8
 local Ki_y = 0.05
 local Kd_y = 0.2
 
--- Horizontal position (X and Z)
 local Kp_xy = 0.5
 local Ki_xy = 0.02
 local Kd_xy = 0.1
 
--- Attitude stabilization (pitch/roll)
 local Kp_att = 1.2
 local Ki_att = 0.05
 local Kd_att = 0.3
 
--- Limits
-local MAX_TOTAL_THRUST = 60   -- 4 * 15 (max total)
+local MAX_TOTAL_THRUST = 60
 local MIN_TOTAL_THRUST = 0
-local MAX_ANGLE_TARGET = 20   -- max pitch/roll target (degrees)
+local MAX_ANGLE_TARGET = 20
 local MAX_ENGINE_POWER = 15
-local DT = 0.05               -- loop period (seconds)
+local DT = 0.05
 
 -- ============================================
 -- PERIPHERAL DISCOVERY
@@ -54,6 +49,13 @@ print("Gyro found.")
 local nav = peripheral.find("navigation_table")
 if not nav then error("Navigation table not found!") end
 print("Navigation table found.")
+
+-- Check if target is set
+if not nav.hasTarget() then
+    print("WARNING: No target set on navigation table!")
+    print("Please set a target using the navigation table GUI (compass, map, etc.)")
+    print("The rocket will still try to hover, but position hold may not work.")
+end
 
 local alt = peripheral.find("altitude_sensor")
 if not alt then
@@ -73,12 +75,6 @@ if monitor then
     monitor.clear()
     print("Monitor found.")
 end
-
--- ============================================
--- SET TARGET ON NAVIGATION TABLE
--- ============================================
-nav.setTarget(TARGET_X, TARGET_ALTITUDE, TARGET_Z)
-print("Navigation target set to X=" .. TARGET_X .. ", Y=" .. TARGET_ALTITUDE .. ", Z=" .. TARGET_Z)
 
 -- ============================================
 -- HELPER FUNCTIONS
@@ -177,7 +173,7 @@ while true do
     -- 1. Read sensors
     local altitude
     if alt then
-        altitude = alt.getHeight()   -- getHeight() is correct
+        altitude = alt.getHeight()
     else
         local vertOffset = nav.getVerticalOffsetToTarget() or 0
         altitude = TARGET_ALTITUDE - vertOffset
@@ -200,12 +196,6 @@ while true do
     local err_y = TARGET_ALTITUDE - altitude
     local err_x = TARGET_X - current_x
     local err_z = TARGET_Z - current_z
-
-    -- (optional) check horizontal distance
-    local dist_h = math.sqrt(err_x^2 + err_z^2)
-    if dist_h > 50 then
-        -- you can add a warning here if needed
-    end
 
     -- 3. PID for altitude -> total thrust
     integral_y = integral_y + err_y * DT
