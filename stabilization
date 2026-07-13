@@ -1,75 +1,119 @@
--- Rocket stabilizer using CC: Redstone Link Bridge
--- Uses sendLinkSignal(freq1, freq2, strength)
--- Gyro: gimbal_sensor from Create: Avionics
+-- Rocket hover controller with 4 fixed-thrust engines
+-- Uses Redstone Link Bridge for engine power
+-- Sensors: gimbal_sensor, navigation_table, altitude_sensor
+-- Monitor for status display
 
-local FREQ1 = "powergrid:generator_induction_rotor"
+-- ============================================
+-- CONFIGURATION (change as needed)
+-- ============================================
+local FREQ1 = 1   -- common first frequency for all receivers
 
--- Assign unique channel numbers for each engine input
+-- Engine channel numbers (second frequency)
 local channels = {
-    front = { up = 'minecraft:black_dye", down = "minecraft:cherry_sapling", left = "minecraft:cobblestone", right = "powergrid:wire_connector", thrust = "minecraft:blue_dye" },
-    back  = { up = "minecraft:light_gray_dye", down = "create:iron_sheet", left = "create:experience_block", right = "create_connected:parallel_gearbox", thrust = "minecraft:blue_dye" },
-    left  = { up = "minecraft:white_dye", down = 'create_connected:fluid_vessel", left = "minecraft:bread", right = "create:large_cogwheel", thrust = "minecraft:blue_dye" },
-    right = { up = "minecraft:bone_meal", down = "minecraft:stick", left = "minecraft:dirt", right = "create_connected:parallel_gearbox", thrust = "minecraft:blue_dye" }
+    front = { thrust = 1 },
+    back  = { thrust = 2 },
+    left  = { thrust = 3 },
+    right = { thrust = 4 }
 }
 
--- PID coefficients (tune later)
-local Kp = 0.6
-local Ki = 0.02
-local Kd = 0.15
+-- Target altitude (blocks)
+local TARGET_ALTITUDE = 100
 
-local TARGET_PITCH = 0
-local TARGET_ROLL = 0
-local THRUST = 5          -- base thrust for side engines
-local MAIN_THRUST = 15    -- central engine power
-local DT = 0.05           -- control loop period (seconds)
-local MAX_ANGLE = 30      -- max nozzle deflection (degrees)
+-- PID coefficients for altitude (total thrust)
+local Kp_y = 0.8
+local Ki_y = 0.05
+local Kd_y = 0.2
 
--- Find peripherals
+-- PID for horizontal position (target pitch/roll)
+local Kp_xy = 0.5
+local Ki_xy = 0.02
+local Kd_xy = 0.1
+
+-- PID for attitude stabilization (pitch/roll)
+local Kp_att = 1.2
+local Ki_att = 0.05
+local Kd_att = 0.3
+
+-- Control loop timing
+local DT = 0.05   -- seconds
+
+-- Limits
+local MAX_TOTAL_THRUST = 60   -- 4 * 15
+local MIN_TOTAL_THRUST = 0
+local MAX_ANGLE_TARGET = 20   -- max pitch/roll target (degrees)
+local MAX_ENGINE_POWER = 15
+
+-- ============================================
+-- PERIPHERAL DISCOVERY
+-- ============================================
 local gyro = peripheral.find("gimbal_sensor")
 if not gyro then error("Gyro not found!") end
 print("Gyro found.")
 
-local linkBridge = peripheral.find("redstone_link_bridge")
-if not linkBridge then error("Redstone Link Bridge not found!") end
+local nav = peripheral.find("navigation_table")
+if not nav then error("Navigation table not found!") end
+print("Navigation table found.")
+
+local alt = peripheral.find("altitude_sensor")
+if not alt then
+    print("Altitude sensor not found, will use Y from navigation.")
+    alt = nil
+else
+    print("Altitude sensor found.")
+end
+
+local link = peripheral.find("redstone_link_bridge")
+if not link then error("Redstone Link Bridge not found!") end
 print("Redstone Link Bridge found.")
 
--- Helper functions
+local monitor = peripheral.find("monitor")
+if monitor then
+    monitor.setTextScale(0.5)
+    monitor.clear()
+    print("Monitor found.")
+else
+    print("Monitor not found, continuing without display.")
+end
+
+-- ============================================
+-- HELPER FUNCTIONS
+-- ============================================
 local function send_signal(channel, value)
     if not channel then return end
     local signal = math.floor(math.max(0, math.min(15, value)))
-    linkBridge.sendLinkSignal(FREQ1, channel, signal)
+    link.sendLinkSignal(FREQ1, channel, signal)
 end
 
 local function clamp(val, min_val, max_val)
     return math.max(min_val, math.min(max_val, val))
 end
 
--- Test function for a single engine
-local function test_engine(name, dir_channel, thrust_channel)
+-- ============================================
+-- ENGINE TEST FUNCTION
+-- ============================================
+local function test_engine(name, thrust_channel)
     print("Testing: " .. name)
-    send_signal(thrust_channel, 5)   -- small thrust
+    send_signal(thrust_channel, 5)
     sleep(1)
-    send_signal(dir_channel, 15)     -- max deflection
-    sleep(2)
-    send_signal(dir_channel, 0)      -- center
+    send_signal(thrust_channel, 10)
     sleep(1)
-    send_signal(thrust_channel, 0)   -- off
+    send_signal(thrust_channel, 0)
+    sleep(0.5)
     print("---")
 end
 
--- Run all tests
 local function run_tests()
     print("===== ENGINE TESTS START =====")
-    print("Each engine will: turn on, deflect, return, turn off.")
+    print("Each engine will pulse 5, then 10, then off.")
     sleep(1)
-    test_engine("Front (up)", channels.front.up, channels.front.thrust)
-    test_engine("Back (down)", channels.back.down, channels.back.thrust)
-    test_engine("Left (left)", channels.left.left, channels.left.thrust)
-    test_engine("Right (right)", channels.right.right, channels.right.thrust)
+    test_engine("Front", channels.front.thrust)
+    test_engine("Back", channels.back.thrust)
+    test_engine("Left", channels.left.thrust)
+    test_engine("Right", channels.right.thrust)
     print("===== TESTS COMPLETE =====")
 end
 
--- Ask user whether to run tests (with timeout)
+-- Ask to run tests
 print("Press any key to run engine tests, or wait 5 seconds to skip.")
 local event = os.pullEvent("key")
 if event then
@@ -78,78 +122,165 @@ else
     print("Skipping tests.")
 end
 
--- Set base thrust for side engines
-send_signal(channels.front.thrust, THRUST)
-send_signal(channels.back.thrust, THRUST)
-send_signal(channels.left.thrust, THRUST)
-send_signal(channels.right.thrust, THRUST)
+-- ============================================
+-- GET STARTING POSITION
+-- ============================================
+local start_pos = nav.getPosition() or {x=0, y=0, z=0}
+local START_X = start_pos.x or 0
+local START_Z = start_pos.z or 0
+print("Start position: X=" .. START_X .. " Z=" .. START_Z)
+print("Target altitude: " .. TARGET_ALTITUDE)
 
--- Start central engine (via redstone on "bottom")
-redstone.setAnalogOutput("bottom", MAIN_THRUST)
-print("Central engine ON at power " .. MAIN_THRUST)
+-- ============================================
+-- PID STATE VARIABLES
+-- ============================================
+-- Altitude PID
+local integral_y = 0
+local prev_error_y = 0
 
-print("Stabilizer running. Press Ctrl+T to stop.")
+-- Horizontal X PID (produces pitch target)
+local integral_x = 0
+local prev_error_x = 0
 
--- PID state variables
-local integral_p = 0
-local integral_r = 0
-local prev_error_p = 0
-local prev_error_r = 0
+-- Horizontal Z PID (produces roll target)
+local integral_z = 0
+local prev_error_z = 0
 
--- Main control loop
+-- Attitude pitch PID
+local integral_pitch = 0
+local prev_error_pitch = 0
+
+-- Attitude roll PID
+local integral_roll = 0
+local prev_error_roll = 0
+
+-- ============================================
+-- MONITOR UPDATE FUNCTION
+-- ============================================
+local function update_monitor(pitch, roll, alt_curr, total_thrust, 
+                              front_pwr, back_pwr, left_pwr, right_pwr,
+                              err_x, err_z, err_y)
+    if not monitor then return end
+    monitor.clear()
+    monitor.setCursorPos(1,1)
+    monitor.write("=== ROCKET STATUS ===")
+    monitor.setCursorPos(1,2)
+    monitor.write(string.format("Alt: %.1f / %.1f  ErrY: %.1f", alt_curr, TARGET_ALTITUDE, err_y))
+    monitor.setCursorPos(1,3)
+    monitor.write(string.format("Pitch: %6.2f  Roll: %6.2f", pitch, roll))
+    monitor.setCursorPos(1,4)
+    monitor.write(string.format("ErrX: %.1f  ErrZ: %.1f", err_x, err_z))
+    monitor.setCursorPos(1,5)
+    monitor.write(string.format("Total thrust: %.1f", total_thrust))
+    monitor.setCursorPos(1,6)
+    monitor.write(string.format("F:%3.0f  B:%3.0f  L:%3.0f  R:%3.0f",
+                                front_pwr, back_pwr, left_pwr, right_pwr))
+end
+
+-- ============================================
+-- MAIN CONTROL LOOP
+-- ============================================
+print("Starting main control loop. Press Ctrl+T to stop.")
+
 while true do
-    -- Get angles from gyro (returns table {pitch, roll})
-    local angles = gyro.getAngles()
+    -- 1. Read sensors
+    local pos = nav.getPosition() or {x=0, y=0, z=0}
+    local current_x = pos.x or 0
+    local current_y = pos.y or 0
+    local current_z = pos.z or 0
+
+    -- Use altitude sensor if available, otherwise use Y from nav
+    local altitude
+    if alt then
+        altitude = alt.getAltitude() or current_y
+    else
+        altitude = current_y
+    end
+
+    local angles = gyro.getAngles() or {0,0,0}
     local pitch = angles[1] or 0
     local roll = angles[2] or 0
 
-    local error_p = TARGET_PITCH - pitch
-    local error_r = TARGET_ROLL - roll
+    -- 2. Compute errors
+    local err_y = TARGET_ALTITUDE - altitude
+    local err_x = START_X - current_x
+    local err_z = START_Z - current_z
 
-    -- Pitch PID
-    integral_p = integral_p + error_p * DT
-    integral_p = clamp(integral_p, -50, 50)
-    local derivative_p = (error_p - prev_error_p) / DT
-    local control_p = Kp * error_p + Ki * integral_p + Kd * derivative_p
-    prev_error_p = error_p
-
-    -- Roll PID
-    integral_r = integral_r + error_r * DT
-    integral_r = clamp(integral_r, -50, 50)
-    local derivative_r = (error_r - prev_error_r) / DT
-    local control_r = Kp * error_r + Ki * integral_r + Kd * derivative_r
-    prev_error_r = error_r
-
-    -- Clamp control outputs
-    control_p = clamp(control_p, -MAX_ANGLE, MAX_ANGLE)
-    control_r = clamp(control_r, -MAX_ANGLE, MAX_ANGLE)
-
-    -- Convert angle to signal (0-15)
-    local function angle_to_signal(angle)
-        return (angle / MAX_ANGLE) * 15
+    -- Check horizontal constraint (optional warning)
+    local dist_h = math.sqrt(err_x^2 + err_z^2)
+    if dist_h > 50 then
+        -- still try to correct, but could log warning
+        -- print("Warning: horizontal deviation > 50 blocks")
     end
 
-    local front_signal = angle_to_signal(control_p)
-    local back_signal = angle_to_signal(-control_p)
-    local left_signal = angle_to_signal(control_r)
-    local right_signal = angle_to_signal(-control_r)
+    -- 3. PID for altitude -> total thrust
+    integral_y = integral_y + err_y * DT
+    integral_y = clamp(integral_y, -50, 50)
+    local deriv_y = (err_y - prev_error_y) / DT
+    local total_thrust = Kp_y * err_y + Ki_y * integral_y + Kd_y * deriv_y
+    prev_error_y = err_y
+    total_thrust = clamp(total_thrust, MIN_TOTAL_THRUST, MAX_TOTAL_THRUST)
 
-    -- Send to engines
-    send_signal(channels.front.up, front_signal)
-    send_signal(channels.front.down, 0)
+    -- 4. PID for horizontal position -> target angles
+    -- X error -> pitch target (positive pitch = forward tilt)
+    integral_x = integral_x + err_x * DT
+    integral_x = clamp(integral_x, -50, 50)
+    local deriv_x = (err_x - prev_error_x) / DT
+    local pitch_target = Kp_xy * err_x + Ki_xy * integral_x + Kd_xy * deriv_x
+    prev_error_x = err_x
+    pitch_target = clamp(pitch_target, -MAX_ANGLE_TARGET, MAX_ANGLE_TARGET)
 
-    send_signal(channels.back.down, back_signal)
-    send_signal(channels.back.up, 0)
+    -- Z error -> roll target (positive roll = tilt right)
+    integral_z = integral_z + err_z * DT
+    integral_z = clamp(integral_z, -50, 50)
+    local deriv_z = (err_z - prev_error_z) / DT
+    local roll_target = Kp_xy * err_z + Ki_xy * integral_z + Kd_xy * deriv_z
+    prev_error_z = err_z
+    roll_target = clamp(roll_target, -MAX_ANGLE_TARGET, MAX_ANGLE_TARGET)
 
-    send_signal(channels.left.left, left_signal)
-    send_signal(channels.left.right, 0)
+    -- 5. PID for attitude stabilization -> differential corrections
+    -- Pitch correction
+    local err_pitch = pitch_target - pitch
+    integral_pitch = integral_pitch + err_pitch * DT
+    integral_pitch = clamp(integral_pitch, -50, 50)
+    local deriv_pitch = (err_pitch - prev_error_pitch) / DT
+    local diff_pitch = Kp_att * err_pitch + Ki_att * integral_pitch + Kd_att * deriv_pitch
+    prev_error_pitch = err_pitch
+    diff_pitch = clamp(diff_pitch, -10, 10)   -- limit diff to avoid saturation
 
-    send_signal(channels.right.right, right_signal)
-    send_signal(channels.right.left, 0)
+    -- Roll correction
+    local err_roll = roll_target - roll
+    integral_roll = integral_roll + err_roll * DT
+    integral_roll = clamp(integral_roll, -50, 50)
+    local deriv_roll = (err_roll - prev_error_roll) / DT
+    local diff_roll = Kp_att * err_roll + Ki_att * integral_roll + Kd_att * deriv_roll
+    prev_error_roll = err_roll
+    diff_roll = clamp(diff_roll, -10, 10)
 
-    -- Optional debug output (uncomment if needed)
-    -- print(string.format("P: %6.2f  R: %6.2f  cP: %6.2f  cR: %6.2f",
-    --       pitch, roll, control_p, control_r))
+    -- 6. Distribute thrust to engines
+    local base = total_thrust / 4
+    local front_pwr = base + diff_pitch
+    local back_pwr  = base - diff_pitch
+    local left_pwr  = base + diff_roll
+    local right_pwr = base - diff_roll
 
+    -- Clamp each engine power to [0, MAX_ENGINE_POWER]
+    front_pwr = clamp(front_pwr, 0, MAX_ENGINE_POWER)
+    back_pwr  = clamp(back_pwr, 0, MAX_ENGINE_POWER)
+    left_pwr  = clamp(left_pwr, 0, MAX_ENGINE_POWER)
+    right_pwr = clamp(right_pwr, 0, MAX_ENGINE_POWER)
+
+    -- 7. Send signals
+    send_signal(channels.front.thrust, front_pwr)
+    send_signal(channels.back.thrust, back_pwr)
+    send_signal(channels.left.thrust, left_pwr)
+    send_signal(channels.right.thrust, right_pwr)
+
+    -- 8. Update monitor (if present)
+    update_monitor(pitch, roll, altitude, total_thrust,
+                   front_pwr, back_pwr, left_pwr, right_pwr,
+                   err_x, err_z, err_y)
+
+    -- 9. Wait for next cycle
     sleep(DT)
 end
