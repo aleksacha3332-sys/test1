@@ -1,17 +1,14 @@
 -- dual_barrel_guard.lua
--- Monitors two fluid barrels (tanks) and manages redstone signals and alerts.
+-- Monitors two fluid barrels, manages redstone signals and sounds alarms.
+-- Works even if computer.beep is unavailable.
 
 -- ===== CONFIGURATION =====
--- Define your tanks: each entry must have:
---   name  - peripheral name (as seen by 'peripheral list')
---   side  - computer side for redstone output (e.g., "left", "right", "back")
---   (optional) highThreshold and lowThreshold in buckets; if not set, global values are used.
 local tanksConfig = {
     {
-        name = "create:fluid_tank_0",    -- change to your peripheral name
+        name = "create:fluid_tank_0",   -- change to your peripheral name
         side = "left",
-        highThreshold = 15,              -- buckets, above this = overfilled
-        lowThreshold  = 5                -- buckets, below this = too low
+        highThreshold = 15,             -- buckets
+        lowThreshold  = 5
     },
     {
         name = "create:fluid_tank_1",
@@ -21,27 +18,41 @@ local tanksConfig = {
     }
 }
 
--- Global thresholds (used if not defined per tank)
-local globalHigh = 15   -- buckets
-local globalLow  = 5    -- buckets
-
--- Check interval (seconds)
+local globalHigh = 15
+local globalLow  = 5
 local checkInterval = 1.0
 
--- Sound settings (for low-level alert)
-local beepFreq = 880       -- Hz
-local beepDur  = 0.3       -- seconds
-local beepInterval = 2.0   -- seconds between beeps while alert active
+-- Sound settings
+local beepFreq = 880      -- Hz
+local beepDur  = 0.3      -- seconds
+local beepInterval = 2.0  -- seconds between beeps
 
 -- Monitor side (set to nil if no monitor)
-local monitorSide = "top"   -- or "left", "right", etc.
+local monitorSide = "top"
 
--- Rednet chat broadcast (optional) – set to true if you have a modem and want to send messages to chat
+-- Rednet chat broadcast (optional)
 local useRednet = false
-local rednetChannel = 1     -- channel to broadcast on
+local rednetChannel = 1
 -- ==========================
 
--- Helper: wrap monitor if available
+-- Safe sound function
+local function playAlertSound()
+    -- Try computer.beep first
+    if computer and computer.beep then
+        computer.beep(beepFreq, beepDur)
+        return
+    end
+    -- Try a speaker peripheral
+    local speaker = peripheral.find("speaker")
+    if speaker then
+        speaker.playSound("block.note_block.pling", 1, beepFreq / 1000)
+        return
+    end
+    -- Fallback: just print (no actual sound)
+    print("[ALERT SOUND] BEEP (sound hardware unavailable)")
+end
+
+-- Helper: wrap monitor
 local monitor = nil
 if monitorSide then
     monitor = peripheral.wrap(monitorSide)
@@ -62,7 +73,7 @@ local function writeMonitor(lines)
     end
 end
 
--- Get total fluid in mB from a tank peripheral
+-- Get fluid in mB
 local function getTotalFluidMB(tankPeripheral)
     if not tankPeripheral or not tankPeripheral.tanks then return nil end
     local tanks = tankPeripheral.tanks()
@@ -92,7 +103,7 @@ for i, cfg in ipairs(tanksConfig) do
             name = cfg.name,
             levelMB = nil,
             levelBuckets = nil,
-            status = "unknown" -- "low", "normal", "high"
+            status = "unknown"
         }
         print("Connected to tank: " .. cfg.name)
     else
@@ -101,7 +112,6 @@ for i, cfg in ipairs(tanksConfig) do
     end
 end
 
--- Remove nil entries (if any tank not found)
 local validTanks = {}
 for _, t in ipairs(tanks) do
     if t then table.insert(validTanks, t) end
@@ -113,31 +123,28 @@ if #tanks == 0 then
     return
 end
 
--- Initialize rednet if requested
 if useRednet then
-    if not peripheral.find("modem") then
+    local modem = peripheral.find("modem")
+    if modem then
+        rednet.open(modem)
+        print("Rednet opened on channel " .. rednetChannel)
+    else
         print("Warning: Rednet enabled but no modem found.")
         useRednet = false
-    else
-        rednet.open(peripheral.find("modem"))
-        print("Rednet opened on channel " .. rednetChannel)
     end
 end
 
 print("Monitoring started. Press Ctrl+T to stop.")
 
--- Alert state
 local lowAlertActive = false
 local lastBeepTime = 0
-local lowTanksList = {}  -- list of tank names that are low
+local lowTanksList = {}
 
--- Main loop
 while true do
     local anyLow = false
     local highCount = 0
-    local highTankSide = nil  -- side of the single high tank
+    local highTankSide = nil
 
-    -- Read each tank and determine status
     for _, tank in ipairs(tanks) do
         local mb = getTotalFluidMB(tank.peripheral)
         if mb == nil then
@@ -161,24 +168,20 @@ while true do
         end
     end
 
-    -- Determine redstone actions
-    -- If exactly one tank is high -> signal on that side, off on the other
-    -- If 0 or 2 high -> turn off both
+    -- Redstone logic: signal on the side of the single high tank
     for _, tank in ipairs(tanks) do
         local shouldSignal = (highCount == 1 and tank.status == "high")
         redstone.setOutput(tank.side, shouldSignal)
     end
 
-    -- Determine low-level alert
-    local shouldAlert = anyLow
-    if shouldAlert then
+    -- Low-level alert
+    if anyLow then
         local now = os.clock()
         if now - lastBeepTime >= beepInterval then
-            computer.beep(beepFreq, beepDur)
+            playAlertSound()
             lastBeepTime = now
         end
         if not lowAlertActive then
-            -- Alert just started: print message
             local msg = "LOW LEVEL ALERT: " .. table.concat(lowTanksList, ", ")
             print(msg)
             if useRednet then
@@ -197,7 +200,7 @@ while true do
         lowTanksList = {}
     end
 
-    -- Prepare monitor display
+    -- Monitor display
     local lines = {}
     lines[1] = "=== Dual Barrel Guard ==="
     local i = 2
@@ -224,13 +227,12 @@ while true do
         writeMonitor(lines)
     end
 
-    -- Console summary (only every cycle)
     print(string.format("[%s] High: %d, Low: %s", os.date("%H:%M:%S"), highCount, anyLow and "YES" or "NO"))
 
     sleep(checkInterval)
 end
 
--- Cleanup (on Ctrl+T)
+-- Cleanup
 print("Program stopped.")
 if monitor then monitor.clear() monitor.setCursorPos(1,1) monitor.write("Stopped") end
 if useRednet then rednet.close() end
