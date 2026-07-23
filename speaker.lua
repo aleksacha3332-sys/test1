@@ -1,39 +1,23 @@
--- Audioplayer Pro (Multi-Speaker, Selective Floppy Drives, Monitor UI, Remote Control)
--- Version 3.1
+-- Audioplayer Pro (Mount‑path based, Multi‑Speaker, Monitor UI, Remote Control)
+-- Version 4.0
 
 local dfpwm = require("cc.audio.dfpwm")
 
 -- ===== CONFIGURATION =====
--- List the drive sides you want to use (e.g., "drive_1", "drive_2", ...).
--- Leave empty {} to use all detected disk drives (not recommended if you have many).
-local ALLOWED_DRIVES = {
-    "drive_0",
-    "drive_1",
-    "drive_2",
-    "drive_3",
-    "drive_4",
-    "drive_5",
-    "drive_6",
-    "drive_7",
-    "drive_8",
-    "drive_9",
-    "drive_10",
-    "drive_11",
-    "drive_12",
-    "drive_13",
-    "drive_14",
-    "drive_15",
-    "drive_16",
-    "drive_17"
+-- List the mount paths (folders) where your audio files are stored.
+-- These are the names of the directories that appear when a floppy is inserted.
+-- Example: "disk", "disk0", "disk1", ...
+local MOUNT_PATHS = {
+    "disk2"
+
 }
 
 local BITRATE = 6000          -- bytes/sec for DFPWM (48 kbps)
-local UPDATE_INTERVAL = 0.5   -- seconds between monitor updates
+local UPDATE_INTERVAL = 0.5   -- seconds between monitor updates (not strictly used)
 
 -- ===== PERIPHERALS =====
 local speakers = {}           -- all connected speakers
 local monitor = nil           -- first connected monitor
-local diskDrives = {}         -- filtered list of drive sides (from ALLOWED_DRIVES)
 
 -- ===== PLAYBACK STATE =====
 local state = {
@@ -41,7 +25,7 @@ local state = {
     paused = false,
     currentFile = nil,
     currentName = nil,
-    currentDrive = nil,
+    currentDrive = nil,       -- will store the mount path (e.g., "disk5")
     loop = false,
     volume = 1.0,
     mode = "single",          -- "single" or "playlist"
@@ -56,7 +40,7 @@ local state = {
 -- ===== HELPER FUNCTIONS =====
 
 -- Find all speakers and the first monitor.
--- Disk drives are taken from ALLOWED_DRIVES (no auto‑detection).
+-- (No drive detection – we use MOUNT_PATHS directly.)
 function findPeripherals()
     speakers = {}
     for _, side in ipairs(peripheral.getNames()) do
@@ -68,42 +52,22 @@ function findPeripherals()
             monitor = p
         end
     end
-
-    -- Use only explicitly allowed drives
-    diskDrives = {}
-    for _, side in ipairs(ALLOWED_DRIVES) do
-        if peripheral.isPresent(side) and peripheral.getType(side) == "disk_drive" then
-            table.insert(diskDrives, side)
-        end
-    end
-    -- If ALLOWED_DRIVES is empty, fallback to all disk drives (legacy behaviour)
-    if #diskDrives == 0 and #ALLOWED_DRIVES == 0 then
-        for _, side in ipairs(peripheral.getNames()) do
-            if peripheral.getType(side) == "disk_drive" then
-                table.insert(diskDrives, side)
-            end
-        end
-    end
 end
 
--- Get list of files from the allowed disk drives
+-- Get list of files from the mount paths defined in MOUNT_PATHS
 function getFileList()
     local files = {}
-    for _, side in ipairs(diskDrives) do
-        local drive = peripheral.wrap(side)
-        if drive and drive.isDiskPresent and drive.isDiskPresent() then
-            local mountPath = side
-            if fs.exists(mountPath) and fs.isDir(mountPath) then
-                for _, file in ipairs(fs.list(mountPath)) do
-                    local fullPath = mountPath .. "/" .. file
-                    if not fs.isDir(fullPath) then
-                        table.insert(files, {
-                            name = file,
-                            path = fullPath,
-                            drive = side,
-                            size = fs.getSize(fullPath)
-                        })
-                    end
+    for _, mountPath in ipairs(MOUNT_PATHS) do
+        if fs.exists(mountPath) and fs.isDir(mountPath) then
+            for _, file in ipairs(fs.list(mountPath)) do
+                local fullPath = mountPath .. "/" .. file
+                if not fs.isDir(fullPath) then
+                    table.insert(files, {
+                        name = file,
+                        path = fullPath,
+                        drive = mountPath,   -- store which mount point it came from
+                        size = fs.getSize(fullPath)
+                    })
                 end
             end
         end
@@ -203,14 +167,15 @@ function playFileCoroutine(filePath, loop, volume)
     state.volume = volume or 1.0
     state.currentFile = filePath
     state.currentName = fs.getName(filePath)
-    -- Determine drive side from path
-    for _, side in ipairs(diskDrives) do
-        if string.find(filePath, "^" .. side .. "/") then
-            state.currentDrive = side
+
+    -- Determine the mount path from the file path
+    state.currentDrive = "?"
+    for _, mountPath in ipairs(MOUNT_PATHS) do
+        if string.find(filePath, "^" .. mountPath .. "/") then
+            state.currentDrive = mountPath
             break
         end
     end
-    if not state.currentDrive then state.currentDrive = "?" end
 
     state.totalBytes = fs.getSize(filePath)
     state.readBytes = 0
@@ -433,7 +398,7 @@ function localCommandHandler(input)
     if cmd == "list" then
         local files = getFileList()
         if #files == 0 then
-            print("No files found on allowed drives.")
+            print("No files found on any mount path.")
         else
             print("Available files:")
             for i, f in ipairs(files) do
@@ -548,7 +513,7 @@ end
 function main()
     findPeripherals()
     print("Speakers found: " .. #speakers)
-    print("Allowed drives: " .. #diskDrives)
+    print("Mount paths configured: " .. #MOUNT_PATHS)
     if monitor then
         print("Monitor found")
         monitor.setTextScale(0.5)
