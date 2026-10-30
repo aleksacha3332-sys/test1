@@ -1,41 +1,38 @@
 --[[
   Door Remote (tablet / pocket computer part)
   ComputerCraft: Tweaked / Minecraft 1.21.1
-  - Shows a list of saved doors
-  - Sends open-requests via rednet
-  - Doors are added in a separate menu (address + password + coordinates)
-  - GPS auto-open: opens doors automatically when you come close
-    (requires a GPS constellation: 4 computers running "gps host")
+  - Master terminal: shows a list of saved doors
+  - Open (password checked by the door, door STAYS OPEN)
+    and close any door manually
+  - "Close all" button for every saved door at once
+  - Doors are added in a separate menu (address + password)
   Requires a wireless modem equipped on the pocket computer.
 ]]
 
-local DATA_FILE = "doors.cfg"
-local PROTOCOL  = "door_control"
+local DOORS_FILE = "doors.cfg"
+local PROTOCOL   = "door_control"
 
 local doors = {}
 
-local settings = {
-    gpsAutoOpen = true,  -- auto open doors when the player is near
-    gpsRange    = 6,     -- distance in blocks that triggers auto-open
-    gpsCooldown = 5,     -- seconds between repeated opens of the same door
-}
-
--- ===== Data load / save =====
-local function saveData()
-    local f = fs.open(DATA_FILE, "w")
-    f.write(textutils.serialize({ doors = doors, settings = settings }))
+-- ===== Door list load / save =====
+local function saveDoors()
+    local f = fs.open(DOORS_FILE, "w")
+    f.write(textutils.serialize(doors))
     f.close()
 end
 
-local function loadData()
-    if fs.exists(DATA_FILE) then
-        local f = fs.open(DATA_FILE, "r")
+local function loadDoors()
+    if fs.exists(DOORS_FILE) then
+        local f = fs.open(DOORS_FILE, "r")
         local data = textutils.unserialize(f.readAll())
         f.close()
+        -- supports both the old plain-list format
+        -- and the {doors=..., settings=...} format
         if type(data) == "table" then
-            if type(data.doors) == "table" then doors = data.doors end
-            if type(data.settings) == "table" then
-                for k, v in pairs(data.settings) do settings[k] = v end
+            if type(data.doors) == "table" then
+                doors = data.doors
+            else
+                doors = data
             end
         end
     end
@@ -55,46 +52,44 @@ local function openModem()
     return false
 end
 
--- ===== Send an open-request to a door =====
-local function requestOpen(door)
-    rednet.send(door.address, { command = "open", password = door.password }, PROTOCOL)
-    local id, msg = rednet.receive(PROTOCOL, 3)
+-- ===== Send a command to one door =====
+local function sendCommand(door, command)
+    local msg = { command = command }
+    if command == "open" then msg.password = door.password end
+    rednet.send(door.address, msg, PROTOCOL)
+    local id, reply = rednet.receive(PROTOCOL, 3)
     if not id then
-        return "No answer (door offline?)"
+        return false, "No answer (door offline?)"
     end
-    if type(msg) == "table" and msg.status == "ok" then
-        return "Door opened!"
+    if type(reply) == "table" and reply.status == "ok" then
+        return true, (command == "open") and "Door opened!" or "Door closed!"
     else
-        return "Access denied (wrong password)"
+        return false, "Access denied (wrong password)"
     end
 end
 
--- ===== GPS auto-open (runs in parallel with the menu) =====
-local lastSent = {}
-
-local function gpsLoop()
-    while true do
-        if settings.gpsAutoOpen and #doors > 0 then
-            local x, y, z = gps.locate(1)
-            if x then
-                local now = os.clock()
-                for i, d in ipairs(doors) do
-                    if d.x and d.y and d.z then
-                        local dist = math.sqrt((x - d.x)^2 + (y - d.y)^2 + (z - d.z)^2)
-                        if dist <= settings.gpsRange then
-                            if not lastSent[i] or now - lastSent[i] >= settings.gpsCooldown then
-                                rednet.send(d.address,
-                                    { command = "open", password = d.password },
-                                    PROTOCOL)
-                                lastSent[i] = now
-                            end
-                        end
-                    end
-                end
-            end
+-- ===== Close every saved door =====
+local function closeAllDoors()
+    term.clear()
+    term.setCursorPos(1, 1)
+    print("=== Close All Doors ===")
+    print("")
+    local closed, failed = 0, 0
+    for _, d in ipairs(doors) do
+        local ok, msg = sendCommand(d, "close")
+        if ok then
+            closed = closed + 1
+            print("[OK]   " .. d.name)
+        else
+            failed = failed + 1
+            print("[FAIL] " .. d.name .. " - " .. msg)
         end
-        sleep(1)
     end
+    print("")
+    print("Closed: " .. closed .. ", failed: " .. failed)
+    print("")
+    print("Press any key...")
+    os.pullEvent("key")
 end
 
 -- ===== Add-door menu =====
@@ -118,42 +113,8 @@ local function addDoorMenu()
     write("Door password: ")
     local password = read()
 
-    print("")
-    print("Door coordinates.")
-    print("Press Enter on X to use your current")
-    print("GPS position.")
-    write("X: ")
-    local xs = read()
-    local x, y, z
-    if xs == "" then
-        x, y, z = gps.locate(3)
-        if not x then
-            print("No GPS signal! Door added without")
-            print("coordinates - GPS auto-open will")
-            print("not work for it.")
-            sleep(3)
-        else
-            print("Position: " .. x .. " " .. y .. " " .. z)
-            sleep(2)
-        end
-    else
-        x = tonumber(xs)
-        write("Y: ")
-        y = tonumber(read())
-        write("Z: ")
-        z = tonumber(read())
-        if not (x and y and z) then
-            print("Invalid coordinates!")
-            sleep(2)
-            return
-        end
-    end
-
-    table.insert(doors, {
-        name = name, address = address,
-        password = password, x = x, y = y, z = z,
-    })
-    saveData()
+    table.insert(doors, { name = name, address = address, password = password })
+    saveDoors()
     print("Door added!")
     sleep(2)
 end
@@ -172,7 +133,7 @@ local function deleteDoorMenu()
     local n = tonumber(read())
     if n and doors[n] then
         table.remove(doors, n)
-        saveData()
+        saveDoors()
         print("Door deleted!")
     else
         print("Cancelled.")
@@ -180,26 +141,36 @@ local function deleteDoorMenu()
     sleep(2)
 end
 
--- ===== GPS settings menu =====
-local function gpsSettingsMenu()
-    term.clear()
-    term.setCursorPos(1, 1)
-    print("=== GPS Settings ===")
-    print("")
-    print("Auto-open: " .. (settings.gpsAutoOpen and "ON" or "OFF"))
-    print("Range: " .. settings.gpsRange .. " blocks")
-    print("")
-    write("Toggle auto-open? (y/n): ")
-    local c = read()
-    if c == "y" or c == "Y" then
-        settings.gpsAutoOpen = not settings.gpsAutoOpen
+-- ===== Door control submenu =====
+local function doorMenu(door)
+    while true do
+        term.clear()
+        term.setCursorPos(1, 1)
+        print("=== " .. door.name .. " [" .. door.address .. "] ===")
+        print("")
+        print("O) Open  (stays open)")
+        print("C) Close")
+        print("B) Back")
+        print("")
+        write("> ")
+        local choice = read()
+
+        if choice == "b" or choice == "B" then
+            return
+        elseif choice == "o" or choice == "O" then
+            print("")
+            print("Sending request...")
+            local _, msg = sendCommand(door, "open")
+            print(msg)
+            sleep(2)
+        elseif choice == "c" or choice == "C" then
+            print("")
+            print("Sending request...")
+            local _, msg = sendCommand(door, "close")
+            print(msg)
+            sleep(2)
+        end
     end
-    write("New range in blocks (empty = keep): ")
-    local r = tonumber(read())
-    if r and r > 0 then settings.gpsRange = r end
-    saveData()
-    print("Saved!")
-    sleep(1)
 end
 
 -- ===== Main menu =====
@@ -213,16 +184,12 @@ local function mainMenu()
             print("(no doors saved)")
         end
         for i, d in ipairs(doors) do
-            local gpsMark = (d.x and "*") or " "
-            print(i .. ") " .. d.name .. " [" .. d.address .. "] " .. gpsMark)
+            print(i .. ") " .. d.name .. " [" .. d.address .. "]")
         end
-        print("")
-        print("(* = has coordinates for GPS)")
-        print("GPS auto-open: " .. (settings.gpsAutoOpen and "ON" or "OFF"))
         print("")
         print("A) Add door")
         print("D) Delete door")
-        print("G) GPS settings")
+        print("X) CLOSE ALL DOORS")
         print("Q) Quit")
         print("")
         write("> ")
@@ -236,16 +203,12 @@ local function mainMenu()
             addDoorMenu()
         elseif choice == "d" or choice == "D" then
             deleteDoorMenu()
-        elseif choice == "g" or choice == "G" then
-            gpsSettingsMenu()
+        elseif choice == "x" or choice == "X" then
+            closeAllDoors()
         else
             local n = tonumber(choice)
             if n and doors[n] then
-                print("")
-                print("Sending request...")
-                local result = requestOpen(doors[n])
-                print(result)
-                sleep(2)
+                doorMenu(doors[n])
             end
         end
     end
@@ -257,5 +220,5 @@ if not openModem() then
     return
 end
 
-loadData()
-parallel.waitForAny(mainMenu, gpsLoop)
+loadDoors()
+mainMenu()
