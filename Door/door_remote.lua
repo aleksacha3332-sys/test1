@@ -53,9 +53,10 @@ local function openModem()
 end
 
 -- ===== Send a command to one door =====
+-- the password is sent with BOTH commands: doors in "free open"
+-- mode ignore it on open but REQUIRE it on close
 local function sendCommand(door, command)
-    local msg = { command = command }
-    if command == "open" then msg.password = door.password end
+    local msg = { command = command, password = door.password }
     rednet.send(door.address, msg, PROTOCOL)
     local id, reply = rednet.receive(PROTOCOL, 3)
     if not id then
