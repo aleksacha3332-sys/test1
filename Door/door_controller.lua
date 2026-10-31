@@ -2,12 +2,11 @@
   Door Controller (server part)
   ComputerCraft: Tweaked / Minecraft 1.21.1
   - Receives open/close requests via rednet
-    (open = password required, stays open until closed;
-     close = no password)
+    (default: open = password, close = free;
+     "free open" mode: open = free, close = password)
   - Touch screen UI on attached Advanced Monitors
-    (supports ANY NUMBER of monitors at once):
-    CLOSE button works without a password,
-    OPEN shows an on-screen PIN pad (digits only)
+    (supports ANY NUMBER of monitors at once,
+     compact layout for 16x12 chars @ text scale 0.5)
   - Proximity auto-open (Player Detector from Advanced
     Peripherals or a redstone input like a pressure plate)
     still uses the auto-close timer
@@ -23,6 +22,7 @@ local config = {
     openTime       = 5,       -- seconds the door stays open after PROXIMITY auto-open
     proximityRange = 4,       -- blocks for the player detector (0 = off)
     inputSide      = "none",  -- redstone input side for a plate ("none" = off)
+    freeOpen       = false,   -- true: open without password, close WITH password
 }
 
 -- ===== Config load / save =====
@@ -46,6 +46,23 @@ local function loadConfig()
 end
 
 -- ===== First-run setup wizard =====
+local VALID_SIDES = {
+    top = true, bottom = true, left = true,
+    right = true, front = true, back = true,
+}
+
+local function askSide(prompt, allowNone)
+    while true do
+        write(prompt)
+        local side = read()
+        if VALID_SIDES[side] or (allowNone and side == "none") then
+            return side
+        end
+        print("Invalid side! Valid: front/back/left/right/top/bottom"
+            .. (allowNone and " or 'none'" or ""))
+    end
+end
+
 local function setupWizard()
     term.clear()
     term.setCursorPos(1, 1)
@@ -55,8 +72,14 @@ local function setupWizard()
     write("Door password (digits only!): ")
     config.password = read()
 
-    write("Redstone output side (front/back/left/right/top/bottom): ")
-    config.outputSide = read()
+    print("Free open mode? Opening needs NO")
+    print("password, but CLOSING does.")
+    write("Enable? (y/n): ")
+    local c = read()
+    config.freeOpen = (c == "y" or c == "Y")
+
+    config.outputSide = askSide(
+        "Redstone output side (front/back/left/right/top/bottom): ", false)
 
     write("Auto-close time after proximity open (seconds): ")
     config.openTime = tonumber(read()) or 5
@@ -64,8 +87,8 @@ local function setupWizard()
     write("Proximity range in blocks (0 = disable): ")
     config.proximityRange = tonumber(read()) or 0
 
-    write("Redstone input side for a plate (or 'none'): ")
-    config.inputSide = read()
+    config.inputSide = askSide(
+        "Redstone input side for a plate (or 'none'): ", true)
 
     saveConfig()
     print("")
@@ -100,7 +123,11 @@ local refreshMonitors = function() end
 
 local function setDoor(open)
     doorOpen = open
-    redstone.setOutput(config.outputSide, open)
+    local ok = pcall(redstone.setOutput, config.outputSide, open)
+    if not ok then
+        print("WARNING: bad redstone output side '" ..
+            tostring(config.outputSide) .. "' - check your config!")
+    end
     refreshMonitors()
 end
 
@@ -122,15 +149,19 @@ local function closeDoor()
 end
 
 -- ===== Touch monitor UI (any number of Advanced Monitors) =====
+-- compact layout sized for 16x12 chars at text scale 0.5
 local monitors = {}
 for _, name in ipairs(peripheral.getNames()) do
     if peripheral.getType(name) == "monitor" then
-        table.insert(monitors, peripheral.wrap(name))
+        local mon = peripheral.wrap(name)
+        mon.setTextScale(0.5)
+        table.insert(monitors, mon)
     end
 end
 
-local pinState = nil -- nil = main screen, string = PIN being entered
-local PIN_MAX  = 8
+local pinState   = nil    -- nil = main screen, string = PIN being entered
+local pinPurpose = "open" -- what the PIN pad will do: "open" or "close"
+local PIN_MAX    = 8
 
 local function forEachMonitor(fn)
     for _, mon in ipairs(monitors) do
@@ -171,7 +202,7 @@ local function drawMainOn(mon)
         monCenter(mon, 2, "Status: CLOSED", colors.red)
     end
 
-    -- left half = OPEN, right half = CLOSE
+    -- left half = OPEN, right half = CLOSE, rows 4..bottom
     local mid = math.floor(w / 2)
     monButton(mon, 1, 4, mid - 1, h, colors.green, "OPEN")
     monButton(mon, mid + 1, 4, w, h, colors.red, "CLOSE")
@@ -182,7 +213,7 @@ local function drawPinPadOn(mon)
     mon.setBackgroundColor(colors.black)
     mon.clear()
 
-    monCenter(mon, 1, "ENTER PIN")
+    monCenter(mon, 1, "PIN TO " .. string.upper(pinPurpose))
     -- PIN display doubles as a CANCEL zone (tap it to go back)
     monCenter(mon, 2, "[" .. string.rep("*", #pinState) .. "]", colors.yellow)
 
@@ -197,7 +228,7 @@ local function drawPinPadOn(mon)
     for r, row in ipairs(keys) do
         for c, key in ipairs(row) do
             local x1 = (c - 1) * cellW + 1
-            local y1 = 3 + (r - 1) * cellH + 1
+            local y1 = 4 + (r - 1) * cellH
             local x2 = (c == 3) and w or (c * cellW)
             local y2 = math.min(h, y1 + cellH - 1)
             local color = colors.gray
@@ -229,11 +260,26 @@ end
 local function handleMainTouch(x, y)
     local w = monitors[1].getSize()
     local mid = math.floor(w / 2)
-    if y >= 4 then
-        if x < mid then
+    if y < 4 then return end
+
+    if x < mid then
+        -- OPEN
+        if config.freeOpen then
+            openDoorHold() -- free open: no PIN needed
+            monFlash("OPENED", colors.lime)
+            drawAll()
+        else
+            pinPurpose = "open"
             pinState = ""
             drawAll()
-        elseif x > mid then
+        end
+    elseif x > mid then
+        -- CLOSE
+        if config.freeOpen then
+            pinPurpose = "close" -- closing is protected in free open mode
+            pinState = ""
+            drawAll()
+        else
             closeDoor() -- no password needed
             monFlash("CLOSED", colors.red)
             drawAll()
@@ -253,7 +299,7 @@ local function handlePinTouch(x, y)
     local cellW = math.floor(w / 3)
     local cellH = math.max(1, math.floor((h - 3) / 4))
     local col = math.min(3, math.floor((x - 1) / cellW) + 1)
-    local row = math.floor((y - 3 - 1) / cellH) + 1
+    local row = math.floor((y - 4) / cellH) + 1
     if row < 1 or row > 4 then return end
 
     local keys = {
@@ -269,13 +315,17 @@ local function handlePinTouch(x, y)
         drawAll()
     elseif key == "OK" then
         if pinState == config.password then
-            openDoorHold()
-            pinState = nil
-            monFlash("ACCESS GRANTED", colors.lime)
+            if pinPurpose == "open" then
+                openDoorHold()
+                monFlash("ACCESS GRANTED", colors.lime)
+            else
+                closeDoor()
+                monFlash("CLOSED", colors.red)
+            end
         else
-            pinState = nil
             monFlash("WRONG PIN", colors.red)
         end
+        pinState = nil
         drawAll()
     elseif #pinState < PIN_MAX then
         pinState = pinState .. key
@@ -313,16 +363,21 @@ local function rednetLoop()
         local id, msg = rednet.receive(PROTOCOL)
         if type(msg) == "table" then
             if msg.command == "open" then
-                if msg.password == config.password then
+                -- free open mode: no password needed to open
+                if config.freeOpen or msg.password == config.password then
                     openDoorHold() -- stays open until someone closes it
                     rednet.send(id, { status = "ok" }, PROTOCOL)
                 else
                     rednet.send(id, { status = "denied" }, PROTOCOL)
                 end
             elseif msg.command == "close" then
-                -- closing never requires a password
-                closeDoor()
-                rednet.send(id, { status = "ok" }, PROTOCOL)
+                -- free open mode: closing REQUIRES the password
+                if config.freeOpen and msg.password ~= config.password then
+                    rednet.send(id, { status = "denied" }, PROTOCOL)
+                else
+                    closeDoor()
+                    rednet.send(id, { status = "ok" }, PROTOCOL)
+                end
             end
         end
     end
@@ -338,8 +393,11 @@ local function proximityLoop()
                 openDoorTimed()
             end
         end
-        if config.inputSide ~= "none" and redstone.getInput(config.inputSide) then
-            openDoorTimed()
+        if config.inputSide ~= "none" then
+            local ok, active = pcall(redstone.getInput, config.inputSide)
+            if ok and active then
+                openDoorTimed()
+            end
         end
         sleep(0.5)
     end
@@ -370,5 +428,10 @@ term.setCursorPos(1, 1)
 print("Door controller online.")
 print("Computer ID (door address): " .. os.getComputerID())
 print("Touch monitors found: " .. #monitors)
+if config.freeOpen then
+    print("Mode: free open (closing needs password)")
+else
+    print("Mode: normal (opening needs password)")
+end
 
 parallel.waitForAny(rednetLoop, proximityLoop, doorLoop, monitorLoop)
