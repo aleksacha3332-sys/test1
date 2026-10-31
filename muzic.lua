@@ -62,8 +62,14 @@ local state = {
     album_input = "",
     is_adding_url = false,
     url_input = "",
+    is_naming_url = false,
+    name_url_input = "",
+    pending_url = "",
     is_splitting = false,
     split_input = "",
+    is_naming_split = false,
+    name_split_input = "",
+    pending_split = "",
     edit_mode = false,
     selected_songs = {},
     selected_albums = {},
@@ -228,15 +234,45 @@ local function scanDisks()
     end
 end
 
-local function addUrlTrack(url)
+-- customName: optional user-given name; falls back to the URL file name
+local function addUrlTrack(url, customName)
     for _, u in ipairs(url_playlist) do
         if u.url == url then return end
     end
-    local nm = url:match("([^/]+)%.dfpwm") or url:match("([^/]+)$") or "stream"
+    local nm = customName
+    if not nm or nm == "" then
+        nm = url:match("([^/]+)%.dfpwm") or url:match("([^/]+)$") or "stream"
+    end
+    nm = nm:gsub("[/\\]", "")
+    if nm == "" then nm = "stream" end
     nm = nm .. " (web)"
     table.insert(url_playlist, {url = url, name = nm})
     saveUrls()
     scanDisks()
+end
+
+-- Deletes a track: web streams are removed from urls.dat,
+-- disk tracks (and every part of a multi-disk track) are deleted
+local function deleteTrack(id)
+    local t = track_registry[id]
+    if not t then return false end
+    if t.source == "url" then
+        for i, u in ipairs(url_playlist) do
+            if u.url == id then table.remove(url_playlist, i) break end
+        end
+        saveUrls()
+        return true
+    end
+    if t.files then
+        local existed = false
+        for _, f in ipairs(t.files) do
+            if fs.exists(f) then existed = true end
+            pcall(fs.delete, f)
+            pcall(fs.delete, f .. ".meta")
+        end
+        return existed
+    end
+    return false
 end
 
 -- ===== TRACK SOURCES =====
@@ -599,8 +635,11 @@ local function drawUI()
 
         if state.edit_mode then
             if state.tab == "all" and #state.selected_songs > 0 then
+                local del_text = "[ DEL (" .. #state.selected_songs .. ") ]"
+                local dx = ex - #del_text - 2
+                addBtn("del_tracks", dx, 14, #del_text, del_text, colors.red, colors.white)
                 local add_text = "[ ADD TO ALBUM (" .. #state.selected_songs .. ") ]"
-                local ax = ex - #add_text - 2
+                local ax = dx - #add_text - 2
                 addBtn("add_to_alb", ax, 14, #add_text, add_text, colors.lime, colors.black)
             elseif state.tab == "albums" then
                 if not state.album_view and #state.selected_albums > 0 then
@@ -608,8 +647,11 @@ local function drawUI()
                     local ax = ex - #del_text - 2
                     addBtn("del_alb", ax, 14, #del_text, del_text, colors.red, colors.white)
                 elseif state.album_view and #state.selected_songs > 0 then
+                    local del_text = "[ DEL (" .. #state.selected_songs .. ") ]"
+                    local dx = ex - #del_text - 2
+                    addBtn("del_tracks", dx, 14, #del_text, del_text, colors.red, colors.white)
                     local rem_text = "[ REMOVE TRACKS (" .. #state.selected_songs .. ") ]"
-                    local ax = ex - #rem_text - 2
+                    local ax = dx - #rem_text - 2
                     addBtn("rem_tracks", ax, 14, #rem_text, rem_text, colors.red, colors.white)
                 end
             end
@@ -983,7 +1025,7 @@ end
 -- Splits a URL or local .dfpwm file into parts across mounted floppies.
 -- Parts are named "Song.dfpwm.partN" and get a ".meta" descriptor;
 -- the player reassembles them automatically on the next scan.
-local function splitToFloppies(inputPath)
+local function splitToFloppies(inputPath, customName)
     local isUrl = inputPath:match("^https?://") ~= nil
 
     -- Pause playback while writing to the disks
@@ -1030,7 +1072,12 @@ local function splitToFloppies(inputPath)
         else pcall(function() src:close() end) end
     end
 
-    local trackName = inputPath:match("([^/]+)%.dfpwm") or "track"
+    local trackName = customName
+    if not trackName or trackName == "" then
+        trackName = inputPath:match("([^/]+)%.dfpwm") or "track"
+    end
+    trackName = trackName:gsub("[/\\]", "")
+    if trackName == "" then trackName = "track" end
 
     local function scanDrivesFree()
         local out = {}
@@ -1153,8 +1200,14 @@ local function controlLoop()
             elseif state.is_adding_url then
                 state.url_input = state.url_input .. p1
                 term.write(p1)
+            elseif state.is_naming_url then
+                state.name_url_input = state.name_url_input .. p1
+                term.write(p1)
             elseif state.is_splitting then
                 state.split_input = state.split_input .. p1
+                term.write(p1)
+            elseif state.is_naming_split then
+                state.name_split_input = state.name_split_input .. p1
                 term.write(p1)
             end
         elseif event == "key" then
@@ -1204,11 +1257,33 @@ local function controlLoop()
                     state.is_adding_url = false
                     local url = state.url_input
                     if url:match("^https?://") then
-                        addUrlTrack(url)
-                        print("\nAdded web stream.")
+                        -- Ask for a display name before adding
+                        state.pending_url = url
+                        state.is_naming_url = true
+                        state.name_url_input = ""
+                        term.clear()
+                        term.setCursorPos(1, 1)
+                        print("=== ADD URL STREAM ===")
+                        print("URL: " .. url)
+                        print("Enter track name (Enter = use file name):")
+                        term.write("> ")
                     else
                         print("\nInvalid URL (must start with http:// or https://)")
+                        os.sleep(1.5)
+                        drawUI()
                     end
+                end
+            elseif state.is_naming_url then
+                if p1 == keys.backspace and #state.name_url_input > 0 then
+                    state.name_url_input = state.name_url_input:sub(1, -2)
+                    local x, y = term.getCursorPos()
+                    term.setCursorPos(x-1, y)
+                    term.write(" ")
+                    term.setCursorPos(x-1, y)
+                elseif p1 == keys.enter then
+                    state.is_naming_url = false
+                    addUrlTrack(state.pending_url, state.name_url_input)
+                    print("\nAdded web stream.")
                     os.sleep(1.5)
                     drawUI()
                 end
@@ -1222,22 +1297,72 @@ local function controlLoop()
                 elseif p1 == keys.enter then
                     state.is_splitting = false
                     local input = state.split_input
+                    if input ~= "" then
+                        -- Ask for a track name before splitting
+                        state.pending_split = input
+                        state.is_naming_split = true
+                        state.name_split_input = ""
+                        term.clear()
+                        term.setCursorPos(1, 1)
+                        print("=== SPLIT TRACK TO FLOPPY DISKS ===")
+                        print("Source: " .. input)
+                        print("Enter track name (Enter = use file name):")
+                        print("(Used for part files and disk labels)")
+                        term.write("> ")
+                    else
+                        drawUI()
+                    end
+                end
+            elseif state.is_naming_split then
+                if p1 == keys.backspace and #state.name_split_input > 0 then
+                    state.name_split_input = state.name_split_input:sub(1, -2)
+                    local x, y = term.getCursorPos()
+                    term.setCursorPos(x-1, y)
+                    term.write(" ")
+                    term.setCursorPos(x-1, y)
+                elseif p1 == keys.enter then
+                    state.is_naming_split = false
                     term.clear()
                     term.setCursorPos(1, 1)
-                    if input ~= "" then
-                        splitToFloppies(input)
-                        print("")
-                        print("Press Enter to return to the player...")
-                        read()
-                    end
+                    splitToFloppies(state.pending_split, state.name_split_input)
+                    print("")
+                    print("Press Enter to return to the player...")
+                    read()
                     scanDisks()
                     drawUI()
                 end
             end
         end
 
+        if event == "paste" then
+            -- Ctrl+V / Cmd+V: append the clipboard text to the active prompt
+            local text = tostring(p1):gsub("[\r\n]+", "")
+            if text ~= "" then
+                if state.is_searching then
+                    state.search = state.search .. text
+                    state.page_all = 1; state.page_alb_r = 1; state.page_alb_l = 1
+                    drawUI()
+                elseif state.is_adding_album then
+                    state.album_input = state.album_input .. text
+                    term.write(text)
+                elseif state.is_adding_url then
+                    state.url_input = state.url_input .. text
+                    term.write(text)
+                elseif state.is_naming_url then
+                    state.name_url_input = state.name_url_input .. text
+                    term.write(text)
+                elseif state.is_splitting then
+                    state.split_input = state.split_input .. text
+                    term.write(text)
+                elseif state.is_naming_split then
+                    state.name_split_input = state.name_split_input .. text
+                    term.write(text)
+                end
+            end
+        end
+
         if event == "monitor_touch" then
-            if state.is_adding_url or state.is_splitting then
+            if state.is_adding_url or state.is_naming_url or state.is_splitting or state.is_naming_split then
                 -- Terminal prompt in progress, monitor input is ignored
             elseif monitor and p1 ~= peripheral.getName(monitor) then
                 -- Ignore other monitors on the network
@@ -1323,6 +1448,48 @@ local function controlLoop()
                             print("(Or click CANCEL EDIT on monitor)")
                             term.write("> ")
                         end
+                    elseif clicked_id == "del_tracks" then
+                        local cur_id = active_playlist[current_song_idx]
+                        local was_current = false
+                        local deleted = 0
+                        for _, p in ipairs(state.selected_songs) do
+                            if deleteTrack(p) then
+                                deleted = deleted + 1
+                                if p == cur_id then was_current = true end
+                                -- drop the id from every album as well
+                                for _, alb in pairs(state.albums) do
+                                    for i = #alb, 1, -1 do
+                                        if alb[i] == p then table.remove(alb, i) end
+                                    end
+                                end
+                            end
+                        end
+                        saveAlbums()
+                        state.selected_songs = {}
+                        state.edit_mode = false
+                        scanDisks()
+                        -- rebuild the active playlist without deleted tracks
+                        local newpl = {}
+                        for _, p in ipairs(active_playlist) do
+                            if track_registry[p] or fs.exists(p) then
+                                table.insert(newpl, p)
+                            end
+                        end
+                        active_playlist = newpl
+                        if #active_playlist == 0 then
+                            for _, p in ipairs(global_playlist) do
+                                table.insert(active_playlist, p)
+                            end
+                        end
+                        current_song_idx = math.min(current_song_idx, math.max(1, #active_playlist))
+                        if was_current then
+                            is_playing = false
+                            seek_request = 0
+                            stopSpeakers()
+                            os.queueEvent("play_status_changed")
+                        end
+                        print("\nDeleted " .. deleted .. " track(s).")
+                        os.sleep(1)
                     elseif clicked_id == "del_alb" then
                         for _, a in ipairs(state.selected_albums) do state.albums[a] = nil end
                         saveAlbums()
@@ -1357,7 +1524,7 @@ local function controlLoop()
                         term.setCursorPos(1,1)
                         print("=== ADD URL STREAM ===")
                         print("Enter direct URL to a .dfpwm file:")
-                        print("(Seek needs Range support on the server)")
+                        print("(Paste with Ctrl+V, seek needs Range support)")
                         term.write("> ")
                     elseif clicked_id == "split_disks" then
                         state.is_splitting = true
@@ -1366,7 +1533,7 @@ local function controlLoop()
                         term.setCursorPos(1,1)
                         print("=== SPLIT TRACK TO FLOPPY DISKS ===")
                         print("Enter a URL or a local .dfpwm file path:")
-                        print("(Playback pauses while writing)")
+                        print("(Paste with Ctrl+V, playback pauses while writing)")
                         term.write("> ")
                     elseif clicked_id:sub(1, 4) == "spk_" then
                         local spk_name = clicked_id:sub(5)
