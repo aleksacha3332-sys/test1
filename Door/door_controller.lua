@@ -72,8 +72,9 @@ local function setupWizard()
     write("Door password (digits only!): ")
     config.password = read()
 
-    print("Free open mode? Opening needs NO")
-    print("password, but CLOSING does.")
+    print("Free open mode? Open AND close locally")
+    print("need NO password, but a remote close LOCKS")
+    print("the door - opening it again needs the password.")
     write("Enable? (y/n): ")
     local c = read()
     config.freeOpen = (c == "y" or c == "Y")
@@ -115,8 +116,11 @@ end
 -- ===== Door state =====
 -- openUntil: moment to auto-close, or math.huge = stays open
 -- until someone sends "close"
+-- locked: set by a REMOTE close in free open mode -
+-- a locked door needs the password to open again
 local doorOpen  = false
 local openUntil = 0
+local locked    = false
 
 -- forward declaration, the monitor UI is defined below
 local refreshMonitors = function() end
@@ -198,6 +202,8 @@ local function drawMainOn(mon)
     monCenter(mon, 1, "DOOR CONTROL")
     if doorOpen then
         monCenter(mon, 2, "Status: OPEN", colors.lime)
+    elseif locked then
+        monCenter(mon, 2, "Status: LOCKED", colors.orange)
     else
         monCenter(mon, 2, "Status: CLOSED", colors.red)
     end
@@ -264,26 +270,21 @@ local function handleMainTouch(x, y)
 
     if x < mid then
         -- OPEN
-        if config.freeOpen then
+        if config.freeOpen and not locked then
             openDoorHold() -- free open: no PIN needed
             monFlash("OPENED", colors.lime)
             drawAll()
         else
+            -- normal mode, or a LOCKED door: PIN required
             pinPurpose = "open"
             pinState = ""
             drawAll()
         end
     elseif x > mid then
-        -- CLOSE
-        if config.freeOpen then
-            pinPurpose = "close" -- closing is protected in free open mode
-            pinState = ""
-            drawAll()
-        else
-            closeDoor() -- no password needed
-            monFlash("CLOSED", colors.red)
-            drawAll()
-        end
+        -- CLOSE: always free on the monitor, never locks
+        closeDoor()
+        monFlash("CLOSED", colors.red)
+        drawAll()
     end
 end
 
@@ -316,6 +317,7 @@ local function handlePinTouch(x, y)
     elseif key == "OK" then
         if pinState == config.password then
             if pinPurpose == "open" then
+                locked = false -- correct PIN unlocks the door
                 openDoorHold()
                 monFlash("ACCESS GRANTED", colors.lime)
             else
@@ -363,21 +365,25 @@ local function rednetLoop()
         local id, msg = rednet.receive(PROTOCOL)
         if type(msg) == "table" then
             if msg.command == "open" then
-                -- free open mode: no password needed to open
-                if config.freeOpen or msg.password == config.password then
+                -- free open mode: no password needed to open,
+                -- unless the door is LOCKED (closed via rednet)
+                local needPassword = (not config.freeOpen) or locked
+                if not needPassword or msg.password == config.password then
+                    locked = false
                     openDoorHold() -- stays open until someone closes it
                     rednet.send(id, { status = "ok" }, PROTOCOL)
                 else
                     rednet.send(id, { status = "denied" }, PROTOCOL)
                 end
             elseif msg.command == "close" then
-                -- free open mode: closing REQUIRES the password
-                if config.freeOpen and msg.password ~= config.password then
-                    rednet.send(id, { status = "denied" }, PROTOCOL)
-                else
-                    closeDoor()
-                    rednet.send(id, { status = "ok" }, PROTOCOL)
+                -- closing is always free; in free open mode a REMOTE
+                -- close also LOCKS the door (opening needs a password)
+                closeDoor()
+                if config.freeOpen then
+                    locked = true
+                    refreshMonitors()
                 end
+                rednet.send(id, { status = "ok" }, PROTOCOL)
             end
         end
     end
