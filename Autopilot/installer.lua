@@ -1,6 +1,6 @@
 -- Autopilot one-file installer for ComputerCraft (MC 1.21.1).
 -- Run this file on the computer: it creates the full autopilot package.
--- All in-code text is English; see README inside the archive comments below.
+-- All in-code text is English; explanations live in README.md.
 
 local FILES = {
   ["autopilot/config.lua"] = [==[
@@ -86,7 +86,8 @@ return config
 local MOD = "AP_DRIVE"
 if _G[MOD] then return _G[MOD] end
 
-local DIR = fs.getDir(shell.getRunningProgram())
+-- dofile'd chunks run in _G without "shell"; main.lua sets AP_DIR.
+local DIR = _G.AP_DIR or "/autopilot"
 local function lib(name) return dofile(fs.combine(DIR, name)) end
 local config = lib("config.lua")
 
@@ -133,7 +134,20 @@ return drive
 -- Autopilot entry point.
 -- Run: autopilot/main.lua   (or place a startup.lua next to it)
 
-local DIR = fs.getDir(shell.getRunningProgram())
+-- Modules are loaded with dofile, which runs in the plain global
+-- environment (_G) where "shell" does not exist. Resolve the package
+-- directory here (main.lua runs with the shell environment) and share it.
+local DIR = "/"
+do
+    local ok, prog = pcall(function() return shell.getRunningProgram() end)
+    if ok and type(prog) == "string" then
+        DIR = fs.getDir(prog)
+        if not DIR or DIR == "" then DIR = "/" end
+    end
+end
+if DIR:sub(1, 1) ~= "/" then DIR = "/" .. DIR end
+_G.AP_DIR = DIR
+
 local function lib(name) return dofile(fs.combine(DIR, name)) end
 
 local config = lib("config.lua")
@@ -365,7 +379,8 @@ main()
 local MOD = "AP_MAPUI"
 if _G[MOD] then return _G[MOD] end
 
-local DIR = fs.getDir(shell.getRunningProgram())
+-- dofile'd chunks run in _G without "shell"; main.lua sets AP_DIR.
+local DIR = _G.AP_DIR or "/autopilot"
 local function lib(name) return dofile(fs.combine(DIR, name)) end
 local config = lib("config.lua")
 local state = lib("state.lua")
@@ -738,7 +753,8 @@ return mapui
 local MOD = "AP_NAV"
 if _G[MOD] then return _G[MOD] end
 
-local DIR = fs.getDir(shell.getRunningProgram())
+-- dofile'd chunks run in _G without "shell"; main.lua sets AP_DIR.
+local DIR = _G.AP_DIR or "/autopilot"
 local function lib(name) return dofile(fs.combine(DIR, name)) end
 local config = lib("config.lua")
 local state = lib("state.lua")
@@ -987,7 +1003,8 @@ return nav
 local MOD = "AP_NOTIFY"
 if _G[MOD] then return _G[MOD] end
 
-local DIR = fs.getDir(shell.getRunningProgram())
+-- dofile'd chunks run in _G without "shell"; main.lua sets AP_DIR.
+local DIR = _G.AP_DIR or "/autopilot"
 local function lib(name) return dofile(fs.combine(DIR, name)) end
 local config = lib("config.lua")
 local state = lib("state.lua")
@@ -1072,7 +1089,8 @@ return notify
 local MOD = "AP_RECORD"
 if _G[MOD] then return _G[MOD] end
 
-local DIR = fs.getDir(shell.getRunningProgram())
+-- dofile'd chunks run in _G without "shell"; main.lua sets AP_DIR.
+local DIR = _G.AP_DIR or "/autopilot"
 local function lib(name) return dofile(fs.combine(DIR, name)) end
 local config = lib("config.lua")
 local state = lib("state.lua")
@@ -1268,7 +1286,8 @@ return recorder
 local MOD = "AP_SENSOR"
 if _G[MOD] then return _G[MOD] end
 
-local DIR = fs.getDir(shell.getRunningProgram())
+-- dofile'd chunks run in _G without "shell"; main.lua sets AP_DIR.
+local DIR = _G.AP_DIR or "/autopilot"
 local function lib(name) return dofile(fs.combine(DIR, name)) end
 local config = lib("config.lua")
 local state = lib("state.lua")
@@ -1396,7 +1415,8 @@ return state
 local MOD = "AP_STORAGE"
 if _G[MOD] then return _G[MOD] end
 
-local DIR = fs.getDir(shell.getRunningProgram())
+-- dofile'd chunks run in _G without "shell"; main.lua sets AP_DIR.
+local DIR = _G.AP_DIR or "/autopilot"
 local function lib(name) return dofile(fs.combine(DIR, name)) end
 local config = lib("config.lua")
 
