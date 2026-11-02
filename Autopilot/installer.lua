@@ -12,6 +12,8 @@ if _G[MOD] then return _G[MOD] end
 
 local config = {}
 
+config.VERSION = "1.2.0"
+
 -- ===================== PERIPHERALS =====================
 -- Valid sides: "top", "bottom", "left", "right", "front", "back".
 -- Set a side to nil for auto-detect.
@@ -352,7 +354,7 @@ local function main()
 
     term.clear()
     term.setCursorPos(1, 1)
-    print("=== Autopilot ===")
+    print("=== Autopilot v" .. config.VERSION .. " ===")
     print(string.format("sensor: %s | disks: %d | routes: %d | POIs: %d | monitor: %s",
         sensor.hasSensor() and "sublevel_sensor" or "GPS",
         storage.driveCount(), #state.routeOrder, countPois(),
@@ -1424,25 +1426,34 @@ local storage = {}
 
 local drives = {}   -- sorted list of { side, mount, label }
 
+-- Probe a single drive side defensively: any failure (missing methods,
+-- non-standard peripherals typed "drive") simply skips the drive.
+local function tryDrive(side)
+    local d = peripheral.wrap(side)
+    if type(d) ~= "table" then return end
+    if not d.isDiskPresent or not d.isDiskPresent() then return end
+    local mount = nil
+    if d.getMountPath then
+        mount = d.getMountPath()
+    end
+    if not mount then return end
+    local label = nil
+    if d.getDiskLabel then
+        local ok, lbl = pcall(d.getDiskLabel)
+        if ok then label = lbl end
+    end
+    drives[#drives + 1] = {
+        side = side,
+        mount = mount,
+        label = label,
+    }
+end
+
 local function scanDrives()
     drives = {}
     for _, side in ipairs(peripheral.getNames()) do
         if peripheral.getType(side) == "drive" then
-            local d = peripheral.wrap(side)
-            if d.isDiskPresent and d.isDiskPresent() then
-                local mount = d.getMountPath()
-                if mount then
-                    local label = nil
-                    if d.getDiskLabel then
-                        label = d.getDiskLabel()
-                    end
-                    drives[#drives + 1] = {
-                        side = side,
-                        mount = mount,
-                        label = label,
-                    }
-                end
-            end
+            pcall(tryDrive, side)
         end
     end
     table.sort(drives, function(a, b) return a.side < b.side end)
