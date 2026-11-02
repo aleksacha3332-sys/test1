@@ -13,7 +13,7 @@ if RUN and RUN[MOD] then return RUN[MOD] end
 
 local config = {}
 
-config.VERSION = "1.4.2"
+config.VERSION = "1.5.0"
 
 -- ===================== PERIPHERALS =====================
 -- Valid sides: "top", "bottom", "left", "right", "front", "back".
@@ -893,6 +893,9 @@ function nav.gotoTarget(sel)
     state.nav.active = true
     state.nav.legIndex = 1
     state.nav.legCount = #legs
+    -- Multi-leg routes always begin with a straight return to the
+    -- first waypoint; single-leg targets are followed directly.
+    state.nav.phase = #legs > 1 and "toStart" or "follow"
     state.nav.status = "enroute"
     state.mode = "auto"
     pwmClock = 0
@@ -938,29 +941,70 @@ local function tick()
         return
     end
 
+    if state.nav.phase == "toStart" then
+        -- Phase 1: drive straight to the first waypoint of the route.
+        -- No look-ahead here: passing near later waypoints must NOT
+        -- complete the route, the vehicle has to return to the start.
+        local q = queue[1]
+        local qdx, qdz = q.x - st.x, q.z - st.z
+        local qdist = math.sqrt(qdx * qdx + qdz * qdz)
+        local qprof = profileOf(q)
+        local reachedStart = qdist < qprof.arriveRadius
+        if reachedStart and q.landing then
+            local qdy = math.abs((q.y or st.y) - st.y)
+            reachedStart = qdy <= config.LANDING_DY
+        end
+        if reachedStart then
+            state.nav.phase = "follow"
+            pwmClock = 0
+            notify.send("info", "Route start reached, following route")
+            state.rev = state.rev + 1
+            return
+        end
+    else
+        -- Phase 2, look-ahead capture: if the vehicle is already within
+        -- capture radius of any upcoming waypoint, jump straight to the
+        -- farthest such waypoint (missed ones in between are dropped,
+        -- so the vehicle never turns back for a point it overshot).
+        local farthest = nil
+        for i = state.nav.legIndex, #queue do
+            local q = queue[i]
+            local qdx, qdz = q.x - st.x, q.z - st.z
+            local qdist = math.sqrt(qdx * qdx + qdz * qdz)
+            local qprof = profileOf(q)
+            if qdist < qprof.arriveRadius then
+                if q.landing then
+                    local qdy = math.abs((q.y or st.y) - st.y)
+                    if qdy <= config.LANDING_DY then farthest = i end
+                else
+                    farthest = i
+                end
+            end
+        end
+
+        if farthest then
+            local skipped = farthest - state.nav.legIndex
+            state.nav.legIndex = farthest + 1
+            pwmClock = 0
+            if skipped > 0 then
+                notify.send("info", string.format("Near waypoint %d/%d, skipped %d missed", farthest, state.nav.legCount, skipped))
+            else
+                notify.send("info", string.format("Waypoint %d/%d reached", farthest, state.nav.legCount))
+            end
+            if state.nav.legIndex > #queue then
+                state.nav.active = false
+                state.nav.status = "idle"
+                drive.stop()
+                notify.send("info", "Arrived at destination")
+            end
+            state.rev = state.rev + 1
+            return
+        end
+    end
+
     local dx, dz = leg.x - st.x, leg.z - st.z
     local dist = math.sqrt(dx * dx + dz * dz)
-    local dy = math.abs((leg.y or st.y) - st.y)
     local prof = profileOf(leg)
-
-    local arrived = dist < prof.arriveRadius
-    if leg.landing then
-        arrived = arrived and dy <= config.LANDING_DY
-    end
-
-    if arrived then
-        state.nav.legIndex = state.nav.legIndex + 1
-        pwmClock = 0
-        notify.send("info", string.format("Waypoint %d/%d reached", state.nav.legIndex - 1, state.nav.legCount))
-        if state.nav.legIndex > #queue then
-            state.nav.active = false
-            state.nav.status = "idle"
-            drive.stop()
-            notify.send("info", "Arrived at destination")
-        end
-        state.rev = state.rev + 1
-        return
-    end
 
     local err = normAngle(bearingTo(dx, dz) - sensor.headingOf(st))
     local ae = math.abs(err)
@@ -994,7 +1038,9 @@ local function tick()
     end
 
     applyWithDuty(lf, lb, rf, rb, duty, dt)
-    state.nav.status = string.format("leg %d/%d err=%.0f dist=%.1f", state.nav.legIndex, #queue, err, dist)
+    state.nav.status = string.format("%s %d/%d err=%.0f dist=%.1f",
+        state.nav.phase == "toStart" and "toStart" or "leg",
+        state.nav.legIndex, #queue, err, dist)
 end
 
 -- Coroutine loop: runs navigation while active, idles otherwise.
@@ -1422,6 +1468,7 @@ local state = {
         active = false,
         legIndex = 0,
         legCount = 0,
+        phase = "follow",        -- "toStart" | "follow"
         status = "idle",
     },
     statusMsg = "ready",
@@ -1613,7 +1660,7 @@ local function writeFile(path, content)
 end
 
 local function main()
-    print("Autopilot installer, package version 1.4.2")
+    print("Autopilot installer, package version 1.5.0")
     local names = {}
     for path in pairs(FILES) do names[#names + 1] = path end
     table.sort(names)
