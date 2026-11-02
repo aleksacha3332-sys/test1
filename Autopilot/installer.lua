@@ -8,11 +8,12 @@ local FILES = {
 -- Adjust the values below to match your machine wiring.
 
 local MOD = "AP_CONFIG"
-if _G[MOD] then return _G[MOD] end
+local RUN = _G.AP_RUN
+if RUN and RUN[MOD] then return RUN[MOD] end
 
 local config = {}
 
-config.VERSION = "1.4.0"
+config.VERSION = "1.4.2"
 
 -- ===================== PERIPHERALS =====================
 -- Valid sides: "top", "bottom", "left", "right", "front", "back".
@@ -51,15 +52,21 @@ config.SLOWDOWN_DIST = 4.0
 
 -- ===================== SCAN PROFILES =====================
 -- name -> { arriveRadius, sampleEvery, dutyMin }
+-- arriveRadius: a waypoint counts as reached when the vehicle passes
+-- within this many blocks of it.
 -- "cruise"  = fast, coarse, rare sampling (long trips)
--- "normal"  = balanced
+-- "normal"  = balanced, 5 block tolerance
 -- "precise" = slow, tight radius, frequent sampling (landings)
 
 config.PROFILES = {
-    cruise  = { arriveRadius = 3.0,  sampleEvery = 1.0, dutyMin = 1.0 },
-    normal  = { arriveRadius = 1.2,  sampleEvery = 0.4, dutyMin = 0.6 },
-    precise = { arriveRadius = 0.35, sampleEvery = 0.1, dutyMin = 0.3 },
+    cruise  = { arriveRadius = 6.0, sampleEvery = 1.0, dutyMin = 1.0 },
+    normal  = { arriveRadius = 5.0, sampleEvery = 0.4, dutyMin = 0.6 },
+    precise = { arriveRadius = 0.6, sampleEvery = 0.1, dutyMin = 0.3 },
 }
+
+-- If the vehicle spins in place instead of turning towards the target,
+-- the left/right track wiring is swapped: set this to true.
+config.INVERT_TURN = false
 
 config.DEFAULT_PROFILE = "normal"
 
@@ -76,15 +83,15 @@ config.LOG_FILE      = "autopilot.log"
 -- Messages are appended to the log and broadcast on this rednet channel.
 config.REDNET_CHANNEL = 4242
 
-local _G_ref = _G
-_G_ref[MOD] = config
+if RUN then RUN[MOD] = config end
 return config
 ]==],
   ["autopilot/drive.lua"] = [==[
 -- Tank drive: four redstone outputs, ON/OFF only.
 
 local MOD = "AP_DRIVE"
-if _G[MOD] then return _G[MOD] end
+local RUN = _G.AP_RUN
+if RUN and RUN[MOD] then return RUN[MOD] end
 
 -- dofile'd chunks run in _G without "shell"; main.lua sets AP_DIR.
 local DIR = _G.AP_DIR or "/autopilot"
@@ -127,7 +134,7 @@ function drive.backward()    drive.set(false, true, false, true)  end
 function drive.pivotLeft()   drive.set(false, true, true, false)  end
 function drive.pivotRight()  drive.set(true, false, false, true)  end
 
-_G[MOD] = drive
+if RUN then RUN[MOD] = drive end
 return drive
 ]==],
   ["autopilot/main.lua"] = [==[
@@ -146,6 +153,15 @@ do
     end
 end
 if DIR:sub(1, 1) ~= "/" then DIR = "/" .. DIR end
+
+-- Drop stale module caches left by previous runs in this session,
+-- then create a fresh registry shared by all modules of this run.
+for k in pairs(_G) do
+    if type(k) == "string" and k:sub(1, 3) == "AP_" then
+        _G[k] = nil
+    end
+end
+_G.AP_RUN = {}
 _G.AP_DIR = DIR
 
 local function lib(name) return dofile(fs.combine(DIR, name)) end
@@ -352,7 +368,7 @@ local function main()
 
     term.clear()
     term.setCursorPos(1, 1)
-    print("=== Autopilot v" .. config.VERSION .. " ===")
+    print("=== Autopilot v" .. tostring(config.VERSION) .. " ===")
     print(string.format("sensor: %s | storage: %s | routes: %d | POIs: %d | monitor: %s",
         sensor.hasSensor() and "sublevel_sensor" or "GPS",
         storage.basePath(),
@@ -378,7 +394,8 @@ main()
 -- Tap a point to select it, use the bottom row buttons to zoom and GO/STOP.
 
 local MOD = "AP_MAPUI"
-if _G[MOD] then return _G[MOD] end
+local RUN = _G.AP_RUN
+if RUN and RUN[MOD] then return RUN[MOD] end
 
 -- dofile'd chunks run in _G without "shell"; main.lua sets AP_DIR.
 local DIR = _G.AP_DIR or "/autopilot"
@@ -744,7 +761,7 @@ function mapui.run()
     end
 end
 
-_G[MOD] = mapui
+if RUN then RUN[MOD] = mapui end
 return mapui
 ]==],
   ["autopilot/nav.lua"] = [==[
@@ -752,7 +769,8 @@ return mapui
 -- landing route support and PWM speed control.
 
 local MOD = "AP_NAV"
-if _G[MOD] then return _G[MOD] end
+local RUN = _G.AP_RUN
+if RUN and RUN[MOD] then return RUN[MOD] end
 
 -- dofile'd chunks run in _G without "shell"; main.lua sets AP_DIR.
 local DIR = _G.AP_DIR or "/autopilot"
@@ -953,9 +971,12 @@ local function tick()
     end
 
     local lf, lb, rf, rb
+    -- positive error = target to the right; INVERT_TURN flips the wiring
+    local turnRight = (err > 0)
+    if config.INVERT_TURN then turnRight = not turnRight end
     if ae > config.TURN_PIVOT_DEG then
         -- pivot in place towards the target
-        if err > 0 then
+        if turnRight then
             lf, lb, rf, rb = true, false, false, true   -- pivot right
         else
             lf, lb, rf, rb = false, true, true, false   -- pivot left
@@ -963,7 +984,7 @@ local function tick()
         duty = 1.0
     elseif ae > config.TURN_DIFF_DEG then
         -- gentle differential turn while moving
-        if err > 0 then
+        if turnRight then
             lf, lb, rf, rb = true, false, false, false  -- left track only -> turn right
         else
             lf, lb, rf, rb = false, false, true, false  -- right track only -> turn left
@@ -995,14 +1016,15 @@ function nav.run()
     end
 end
 
-_G[MOD] = nav
+if RUN then RUN[MOD] = nav end
 return nav
 ]==],
   ["autopilot/notify.lua"] = [==[
 -- Notification hub: local log + rednet broadcast for a central system.
 
 local MOD = "AP_NOTIFY"
-if _G[MOD] then return _G[MOD] end
+local RUN = _G.AP_RUN
+if RUN and RUN[MOD] then return RUN[MOD] end
 
 -- dofile'd chunks run in _G without "shell"; main.lua sets AP_DIR.
 local DIR = _G.AP_DIR or "/autopilot"
@@ -1080,7 +1102,7 @@ function notify.send(level, msg)
     print(line)
 end
 
-_G[MOD] = notify
+if RUN then RUN[MOD] = notify end
 return notify
 ]==],
   ["autopilot/record.lua"] = [==[
@@ -1088,7 +1110,8 @@ return notify
 -- are sampled automatically into a point list.
 
 local MOD = "AP_RECORD"
-if _G[MOD] then return _G[MOD] end
+local RUN = _G.AP_RUN
+if RUN and RUN[MOD] then return RUN[MOD] end
 
 -- dofile'd chunks run in _G without "shell"; main.lua sets AP_DIR.
 local DIR = _G.AP_DIR or "/autopilot"
@@ -1278,14 +1301,15 @@ function recorder.run()
     end
 end
 
-_G[MOD] = recorder
+if RUN then RUN[MOD] = recorder end
 return recorder
 ]==],
   ["autopilot/sensor.lua"] = [==[
 -- Position/orientation source: sublevel_sensor preferred, GPS fallback.
 
 local MOD = "AP_SENSOR"
-if _G[MOD] then return _G[MOD] end
+local RUN = _G.AP_RUN
+if RUN and RUN[MOD] then return RUN[MOD] end
 
 -- dofile'd chunks run in _G without "shell"; main.lua sets AP_DIR.
 local DIR = _G.AP_DIR or "/autopilot"
@@ -1367,7 +1391,7 @@ end
 
 function sensor.lastGood() return lastGood end
 
-_G[MOD] = sensor
+if RUN then RUN[MOD] = sensor end
 return sensor
 ]==],
   ["autopilot/startup.lua"] = [==[
@@ -1380,7 +1404,8 @@ shell.run("autopilot/main.lua")
 -- Shared mutable state (singleton shared by every module).
 
 local MOD = "AP_STATE"
-if _G[MOD] then return _G[MOD] end
+local RUN = _G.AP_RUN
+if RUN and RUN[MOD] then return RUN[MOD] end
 
 local state = {
     mode = "manual",            -- "manual" | "record" | "auto"
@@ -1405,7 +1430,7 @@ local state = {
     rev = 0,                    -- bumped to request a map redraw
 }
 
-_G[MOD] = state
+if RUN then RUN[MOD] = state end
 return state
 ]==],
   ["autopilot/storage.lua"] = [==[
@@ -1413,7 +1438,8 @@ return state
 -- All route data lives in the "data" folder next to the program.
 
 local MOD = "AP_STORAGE"
-if _G[MOD] then return _G[MOD] end
+local RUN = _G.AP_RUN
+if RUN and RUN[MOD] then return RUN[MOD] end
 
 -- dofile'd chunks run in _G without "shell"; main.lua sets AP_DIR.
 local DIR = _G.AP_DIR or "/autopilot"
@@ -1566,7 +1592,7 @@ function storage.freeSpace()
     return math.huge   -- "unlimited"
 end
 
-_G[MOD] = storage
+if RUN then RUN[MOD] = storage end
 return storage
 ]==],
 }
@@ -1587,7 +1613,7 @@ local function writeFile(path, content)
 end
 
 local function main()
-    print("Autopilot installer, package version 1.4.0")
+    print("Autopilot installer, package version 1.4.2")
     local names = {}
     for path in pairs(FILES) do names[#names + 1] = path end
     table.sort(names)
