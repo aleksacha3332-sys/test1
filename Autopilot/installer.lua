@@ -1429,13 +1429,17 @@ local function scanDrives()
     for _, side in ipairs(peripheral.getNames()) do
         if peripheral.getType(side) == "drive" then
             local d = peripheral.wrap(side)
-            if d.isDiskPresent() then
+            if d.isDiskPresent and d.isDiskPresent() then
                 local mount = d.getMountPath()
                 if mount then
+                    local label = nil
+                    if d.getDiskLabel then
+                        label = d.getDiskLabel()
+                    end
                     drives[#drives + 1] = {
                         side = side,
                         mount = mount,
-                        label = d.getLabel(),
+                        label = label,
                     }
                 end
             end
