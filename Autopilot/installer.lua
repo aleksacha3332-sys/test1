@@ -13,7 +13,7 @@ if RUN and RUN[MOD] then return RUN[MOD] end
 
 local config = {}
 
-config.VERSION = "1.5.0"
+config.VERSION = "1.6.0"
 
 -- ===================== PERIPHERALS =====================
 -- Valid sides: "top", "bottom", "left", "right", "front", "back".
@@ -218,7 +218,7 @@ end
 local function printHelp()
     print([[
 Autopilot console commands:
-  go <name|#id>        drive to a POI or route
+  go <name|#id> [n]    drive to a POI or route (n = waypoint number)
   stop                 abort autopilot
   rec [landing]        start recording (landing = precise route)
   save [name]          save recording to disks
@@ -251,6 +251,16 @@ local function console()
         local cmd, a2, a3 = args[1], args[2], args[3]
         if cmd == "go" then
             local sel = resolveTarget(a2)
+            local idx = tonumber(a3)
+            if sel and idx and sel.kind == "route" then
+                local route = state.routes[sel.id]
+                if route and idx >= 1 and idx <= #route.points then
+                    sel = { kind = "routePoint", id = sel.id, index = idx,
+                            label = sel.label .. "#" .. idx }
+                else
+                    sel = nil
+                end
+            end
             if not sel then
                 print("unknown target, see 'routes' / 'pois'")
             else
@@ -821,10 +831,28 @@ function nav.abort(reason)
     end
 end
 
-local function buildLegsForRoute(route, uptoIndex)
+-- Index of the route point closest to the given state (defaults to 1).
+local function nearestIndex(points, st)
+    local best, bestD = 1, math.huge
+    for i, p in ipairs(points) do
+        local d = math.huge
+        if st and st.x then
+            local dx, dz = p.x - st.x, p.z - st.z
+            d = dx * dx + dz * dz
+        end
+        if d < bestD then
+            bestD = d
+            best = i
+        end
+    end
+    return best
+end
+
+-- Ordered legs from one route index to another (any direction).
+local function sliceLegs(route, fromIndex, toIndex)
     local legs = {}
-    local n = math.min(uptoIndex or #route.points, #route.points)
-    for i = 1, n do
+    local step = fromIndex <= toIndex and 1 or -1
+    for i = fromIndex, toIndex, step do
         local p = route.points[i]
         legs[#legs + 1] = {
             x = p.x, y = p.y, z = p.z,
@@ -842,15 +870,22 @@ function nav.gotoTarget(sel)
     local legs = {}
     local destLabel = "?"
 
+    -- The vehicle joins the route at the waypoint nearest to its current
+    -- position, then travels along the route to the target, in whichever
+    -- direction that is (forward or backward along the recorded path).
+    local st = sensor.getState()
+
     if sel.kind == "poi" then
         local poi = state.pois[sel.name]
         if not poi then return false, "POI not found" end
         destLabel = "POI " .. poi.name
-        -- follow the route that contains the POI up to it
+        -- follow the route that contains the POI, from the nearest point up to it
         if poi.routeId then
             local route = storage.loadRoute(poi.routeId)
             if route then
-                for _, l in ipairs(buildLegsForRoute(route, poi.index)) do
+                local k = nearestIndex(route.points, st)
+                destLabel = destLabel .. " (from " .. route.name .. "#" .. k .. ")"
+                for _, l in ipairs(sliceLegs(route, k, poi.index)) do
                     legs[#legs + 1] = l
                 end
             end
@@ -863,7 +898,7 @@ function nav.gotoTarget(sel)
             if lid then
                 local lr = storage.loadRoute(lid)
                 if lr then
-                    for _, l in ipairs(buildLegsForRoute(lr)) do
+                    for _, l in ipairs(sliceLegs(lr, 1, #lr.points)) do
                         l.landing = true
                         legs[#legs + 1] = l
                     end
@@ -876,13 +911,15 @@ function nav.gotoTarget(sel)
     elseif sel.kind == "route" then
         local route = storage.loadRoute(sel.id)
         if not route then return false, "route not found" end
-        destLabel = "route " .. route.name
-        legs = buildLegsForRoute(route)
+        local k = nearestIndex(route.points, st)
+        destLabel = "route " .. route.name .. " (from #" .. k .. ")"
+        legs = sliceLegs(route, k, #route.points)
     elseif sel.kind == "routePoint" then
         local route = storage.loadRoute(sel.id)
         if not route then return false, "route not found" end
-        destLabel = route.name .. "#" .. sel.index
-        legs = buildLegsForRoute(route, sel.index)
+        local k = nearestIndex(route.points, st)
+        destLabel = route.name .. "#" .. sel.index .. " (from #" .. k .. ")"
+        legs = sliceLegs(route, k, sel.index)
     else
         return false, "unknown selection kind"
     end
@@ -893,9 +930,6 @@ function nav.gotoTarget(sel)
     state.nav.active = true
     state.nav.legIndex = 1
     state.nav.legCount = #legs
-    -- Multi-leg routes always begin with a straight return to the
-    -- first waypoint; single-leg targets are followed directly.
-    state.nav.phase = #legs > 1 and "toStart" or "follow"
     state.nav.status = "enroute"
     state.mode = "auto"
     pwmClock = 0
@@ -941,65 +975,43 @@ local function tick()
         return
     end
 
-    if state.nav.phase == "toStart" then
-        -- Phase 1: drive straight to the first waypoint of the route.
-        -- No look-ahead here: passing near later waypoints must NOT
-        -- complete the route, the vehicle has to return to the start.
-        local q = queue[1]
+    -- Look-ahead capture: if the vehicle is already within capture
+    -- radius of any upcoming waypoint, jump straight to the farthest
+    -- such waypoint (missed ones in between are dropped, so the
+    -- vehicle never turns back for a point it overshot).
+    local farthest = nil
+    for i = state.nav.legIndex, #queue do
+        local q = queue[i]
         local qdx, qdz = q.x - st.x, q.z - st.z
         local qdist = math.sqrt(qdx * qdx + qdz * qdz)
         local qprof = profileOf(q)
-        local reachedStart = qdist < qprof.arriveRadius
-        if reachedStart and q.landing then
-            local qdy = math.abs((q.y or st.y) - st.y)
-            reachedStart = qdy <= config.LANDING_DY
-        end
-        if reachedStart then
-            state.nav.phase = "follow"
-            pwmClock = 0
-            notify.send("info", "Route start reached, following route")
-            state.rev = state.rev + 1
-            return
-        end
-    else
-        -- Phase 2, look-ahead capture: if the vehicle is already within
-        -- capture radius of any upcoming waypoint, jump straight to the
-        -- farthest such waypoint (missed ones in between are dropped,
-        -- so the vehicle never turns back for a point it overshot).
-        local farthest = nil
-        for i = state.nav.legIndex, #queue do
-            local q = queue[i]
-            local qdx, qdz = q.x - st.x, q.z - st.z
-            local qdist = math.sqrt(qdx * qdx + qdz * qdz)
-            local qprof = profileOf(q)
-            if qdist < qprof.arriveRadius then
-                if q.landing then
-                    local qdy = math.abs((q.y or st.y) - st.y)
-                    if qdy <= config.LANDING_DY then farthest = i end
-                else
-                    farthest = i
-                end
-            end
-        end
-
-        if farthest then
-            local skipped = farthest - state.nav.legIndex
-            state.nav.legIndex = farthest + 1
-            pwmClock = 0
-            if skipped > 0 then
-                notify.send("info", string.format("Near waypoint %d/%d, skipped %d missed", farthest, state.nav.legCount, skipped))
+        if qdist < qprof.arriveRadius then
+            if q.landing then
+                local qdy = math.abs((q.y or st.y) - st.y)
+                if qdy <= config.LANDING_DY then farthest = i end
             else
-                notify.send("info", string.format("Waypoint %d/%d reached", farthest, state.nav.legCount))
+                farthest = i
             end
-            if state.nav.legIndex > #queue then
-                state.nav.active = false
-                state.nav.status = "idle"
-                drive.stop()
-                notify.send("info", "Arrived at destination")
-            end
-            state.rev = state.rev + 1
-            return
         end
+    end
+
+    if farthest then
+        local skipped = farthest - state.nav.legIndex
+        state.nav.legIndex = farthest + 1
+        pwmClock = 0
+        if skipped > 0 then
+            notify.send("info", string.format("Near waypoint %d/%d, skipped %d missed", farthest, state.nav.legCount, skipped))
+        else
+            notify.send("info", string.format("Waypoint %d/%d reached", farthest, state.nav.legCount))
+        end
+        if state.nav.legIndex > #queue then
+            state.nav.active = false
+            state.nav.status = "idle"
+            drive.stop()
+            notify.send("info", "Arrived at destination")
+        end
+        state.rev = state.rev + 1
+        return
     end
 
     local dx, dz = leg.x - st.x, leg.z - st.z
@@ -1038,8 +1050,7 @@ local function tick()
     end
 
     applyWithDuty(lf, lb, rf, rb, duty, dt)
-    state.nav.status = string.format("%s %d/%d err=%.0f dist=%.1f",
-        state.nav.phase == "toStart" and "toStart" or "leg",
+    state.nav.status = string.format("leg %d/%d err=%.0f dist=%.1f",
         state.nav.legIndex, #queue, err, dist)
 end
 
@@ -1468,7 +1479,6 @@ local state = {
         active = false,
         legIndex = 0,
         legCount = 0,
-        phase = "follow",        -- "toStart" | "follow"
         status = "idle",
     },
     statusMsg = "ready",
@@ -1644,23 +1654,18 @@ return storage
 ]==],
 }
 
-local function writeFile(path, content)
-    local dir = fs.getDir(path)
-    if dir and dir ~= "" and not fs.exists(dir) then
-        fs.makeDir(dir)
-    end
-    local f = fs.open(path, "w")
-    if not f then
-        print("ERROR: cannot write " .. path)
-        return false
-    end
-    f.write(content)
-    f.close()
-    return true
-end
-
 local function main()
-    print("Autopilot installer, package version 1.5.0")
+    print(string.format("Autopilot installer, package version %s", "1.6.0"))
+    if not fs.exists("autopilot") then
+        fs.makeDir("autopilot")
+    end
+    local function writeFile(path, content)
+        local f = fs.open(path, "w")
+        if not f then return false end
+        f.write(content)
+        f.close()
+        return true
+    end
     local names = {}
     for path in pairs(FILES) do names[#names + 1] = path end
     table.sort(names)
