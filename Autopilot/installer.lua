@@ -12,7 +12,7 @@ if _G[MOD] then return _G[MOD] end
 
 local config = {}
 
-config.VERSION = "1.2.0"
+config.VERSION = "1.3.0"
 
 -- ===================== PERIPHERALS =====================
 -- Valid sides: "top", "bottom", "left", "right", "front", "back".
@@ -355,9 +355,12 @@ local function main()
     term.clear()
     term.setCursorPos(1, 1)
     print("=== Autopilot v" .. config.VERSION .. " ===")
-    print(string.format("sensor: %s | disks: %d | routes: %d | POIs: %d | monitor: %s",
+    local mounts = {}
+    for _, d in ipairs(storage.drives()) do mounts[#mounts + 1] = d.mount end
+    print(string.format("sensor: %s | disks: %d (%s) | routes: %d | POIs: %d | monitor: %s",
         sensor.hasSensor() and "sublevel_sensor" or "GPS",
-        storage.driveCount(), #state.routeOrder, countPois(),
+        storage.driveCount(), table.concat(mounts, ","),
+        #state.routeOrder, countPois(),
         mapui.available() and "yes" or "no"))
     notify.send("info", "Autopilot online")
 
@@ -1424,29 +1427,21 @@ local config = lib("config.lua")
 
 local storage = {}
 
-local drives = {}   -- sorted list of { side, mount, label }
+local drives = {}   -- sorted list of { side, mount }
 
 -- Probe a single drive side defensively: any failure (missing methods,
--- non-standard peripherals typed "drive") simply skips the drive.
+-- proxied peripherals on ships, non-standard "drive" types) simply
+-- skips the drive. The only thing storage needs is the mount path.
 local function tryDrive(side)
     local d = peripheral.wrap(side)
     if type(d) ~= "table" then return end
     if not d.isDiskPresent or not d.isDiskPresent() then return end
-    local mount = nil
-    if d.getMountPath then
-        mount = d.getMountPath()
-    end
-    if not mount then return end
-    local label = nil
-    if d.getDiskLabel then
-        local ok, lbl = pcall(d.getDiskLabel)
-        if ok then label = lbl end
-    end
-    drives[#drives + 1] = {
-        side = side,
-        mount = mount,
-        label = label,
-    }
+    local okM, mount = pcall(function()
+        if d.getMountPath then return d.getMountPath() end
+        return nil
+    end)
+    if not okM or type(mount) ~= "string" or mount == "" then return end
+    drives[#drives + 1] = { side = side, mount = mount }
 end
 
 local function scanDrives()
@@ -1661,6 +1656,7 @@ local function writeFile(path, content)
 end
 
 local function main()
+    print("Autopilot installer, package version 1.3.0")
     local names = {}
     for path in pairs(FILES) do names[#names + 1] = path end
     table.sort(names)
