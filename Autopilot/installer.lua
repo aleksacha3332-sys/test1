@@ -12,7 +12,7 @@ if _G[MOD] then return _G[MOD] end
 
 local config = {}
 
-config.VERSION = "1.3.0"
+config.VERSION = "1.4.0"
 
 -- ===================== PERIPHERALS =====================
 -- Valid sides: "top", "bottom", "left", "right", "front", "back".
@@ -67,9 +67,7 @@ config.DEFAULT_PROFILE = "normal"
 config.LANDING_DY = 1.0
 
 -- ===================== STORAGE =====================
--- Route data is striped across disks in fixed-size chunks,
--- the manifest and POI index are replicated on every disk.
-config.CHUNK_SIZE    = 4096
+-- Everything is stored in the "data" folder next to the program.
 config.MANIFEST_FILE = "manifest.dat"
 config.POI_FILE      = "poi.dat"
 config.LOG_FILE      = "autopilot.log"
@@ -355,11 +353,9 @@ local function main()
     term.clear()
     term.setCursorPos(1, 1)
     print("=== Autopilot v" .. config.VERSION .. " ===")
-    local mounts = {}
-    for _, d in ipairs(storage.drives()) do mounts[#mounts + 1] = d.mount end
-    print(string.format("sensor: %s | disks: %d (%s) | routes: %d | POIs: %d | monitor: %s",
+    print(string.format("sensor: %s | storage: %s | routes: %d | POIs: %d | monitor: %s",
         sensor.hasSensor() and "sublevel_sensor" or "GPS",
-        storage.driveCount(), table.concat(mounts, ","),
+        storage.basePath(),
         #state.routeOrder, countPois(),
         mapui.available() and "yes" or "no"))
     notify.send("info", "Autopilot online")
@@ -1213,8 +1209,8 @@ function recorder.finish(name)
         end
     end
     if changed then storage.savePOIs(pois) end
-    notify.send("info", string.format("Route '%s' saved: %d points across %d disk(s)",
-        name, #route.points, storage.driveCount()))
+    notify.send("info", string.format("Route '%s' saved: %d points",
+        name, #route.points))
     state.rev = state.rev + 1
     return true, id
 end
@@ -1413,9 +1409,8 @@ _G[MOD] = state
 return state
 ]==],
   ["autopilot/storage.lua"] = [==[
--- Multi-disk storage: route data is striped across disks in chunks,
--- the manifest and POI index are replicated on every disk so any
--- single disk can rebuild the full picture.
+-- Local storage on the computer's own filesystem.
+-- All route data lives in the "data" folder next to the program.
 
 local MOD = "AP_STORAGE"
 if _G[MOD] then return _G[MOD] end
@@ -1427,41 +1422,14 @@ local config = lib("config.lua")
 
 local storage = {}
 
-local drives = {}   -- sorted list of { side, mount }
-
--- Probe a single drive side defensively: any failure (missing methods,
--- proxied peripherals on ships, non-standard "drive" types) simply
--- skips the drive. The only thing storage needs is the mount path.
-local function tryDrive(side)
-    local d = peripheral.wrap(side)
-    if type(d) ~= "table" then return end
-    if not d.isDiskPresent or not d.isDiskPresent() then return end
-    local okM, mount = pcall(function()
-        if d.getMountPath then return d.getMountPath() end
-        return nil
-    end)
-    if not okM or type(mount) ~= "string" or mount == "" then return end
-    drives[#drives + 1] = { side = side, mount = mount }
-end
-
-local function scanDrives()
-    drives = {}
-    for _, side in ipairs(peripheral.getNames()) do
-        if peripheral.getType(side) == "drive" then
-            pcall(tryDrive, side)
-        end
-    end
-    table.sort(drives, function(a, b) return a.side < b.side end)
-    return drives
-end
-
--- ---------- manifest (replicated) ----------
+local BASE = fs.combine(DIR, "data")
 
 local manifest = { nextRouteId = 1, routes = {} }
 local pois = {}
 
-local function manifestPath(mount) return fs.combine(mount, config.MANIFEST_FILE) end
-local function poiPath(mount) return fs.combine(mount, config.POI_FILE) end
+local function manifestPath() return fs.combine(BASE, config.MANIFEST_FILE) end
+local function poiPath() return fs.combine(BASE, config.POI_FILE) end
+local function routePath(id) return fs.combine(BASE, "rt_" .. id .. ".dat") end
 
 local function readSerialized(path)
     if not fs.exists(path) then return nil end
@@ -1472,109 +1440,83 @@ local function readSerialized(path)
     return data
 end
 
-local function writeEverywhere(relative, content)
-    for _, d in ipairs(drives) do
-        local f = fs.open(fs.combine(d.mount, relative), "w")
-        if f then
-            f.write(content)
-            f.close()
-        end
+local function writeFile(path, content)
+    local f = fs.open(path, "w")
+    if not f then return false end
+    f.write(content)
+    f.close()
+    return true
+end
+
+local function ensureBase()
+    if not fs.exists(BASE) then
+        pcall(fs.makeDir, BASE)
     end
 end
 
 function storage.init()
-    scanDrives()
-    for _, d in ipairs(drives) do
-        local data = readSerialized(manifestPath(d.mount))
-        if data and data.routes then
-            manifest = data
-            break
-        end
+    ensureBase()
+    local m = readSerialized(manifestPath())
+    if type(m) == "table" and type(m.routes) == "table" then
+        manifest = m
     end
-    for _, d in ipairs(drives) do
-        local data = readSerialized(poiPath(d.mount))
-        if data then
-            pois = data
-            break
-        end
+    local p = readSerialized(poiPath())
+    if type(p) == "table" then
+        pois = p
     end
 end
 
-function storage.refresh() scanDrives() end
-function storage.driveCount() return #drives end
-function storage.drives() return drives end
+function storage.refresh() ensureBase() end
+
+-- Kept for interface compatibility: one local storage, always available.
+function storage.driveCount() return 1 end
+function storage.drives()
+    return { { side = "hdd", mount = BASE } }
+end
+
+function storage.basePath() return BASE end
 
 function storage.saveManifest()
-    writeEverywhere(config.MANIFEST_FILE, textutils.serialize(manifest))
+    ensureBase()
+    writeFile(manifestPath(), textutils.serialize(manifest))
 end
 
--- ---------- POI index (replicated) ----------
+-- ---------- POI index ----------
 
 function storage.getPOIs() return pois end
 
--- Reload the POI index from any disk that has it.
 function storage.loadPOIs()
-    scanDrives()
-    for _, d in ipairs(drives) do
-        local data = readSerialized(poiPath(d.mount))
-        if data then
-            pois = data
-            break
-        end
-    end
+    local p = readSerialized(poiPath())
+    if type(p) == "table" then pois = p end
     return pois
 end
 
 function storage.savePOIs(newPois)
     if newPois then pois = newPois end
-    writeEverywhere(config.POI_FILE, textutils.serialize(pois))
+    ensureBase()
+    writeFile(poiPath(), textutils.serialize(pois))
 end
 
--- ---------- route chunk striping ----------
-
-local function chunkName(routeId, index)
-    return "rt_" .. routeId .. "_" .. index
-end
-
-function storage.deleteChunks(id)
-    scanDrives()
-    for _, d in ipairs(drives) do
-        local i = 1
-        while fs.exists(fs.combine(d.mount, chunkName(id, i))) do
-            fs.delete(fs.combine(d.mount, chunkName(id, i)))
-            i = i + 1
-        end
-    end
-end
+-- ---------- routes ----------
 
 -- Save a route table { id=nil|num, name, kind, points }.
--- Serializes the points, stripes them across disks, updates the manifest.
 function storage.saveRoute(route)
-    scanDrives()
-    if #drives == 0 then return nil, "no disk drives present" end
+    ensureBase()
     local data = textutils.serialize(route.points)
     local id = route.id
     if id == nil then
         id = manifest.nextRouteId
-        manifest.nextRouteId = manifest.nextRouteId + 1
+        manifest.nextRouteId = id + 1
         route.id = id
     else
-        storage.deleteChunks(id)
+        pcall(fs.delete, routePath(id))
     end
-    local count = math.max(1, math.ceil(#data / config.CHUNK_SIZE))
-    for i = 1, count do
-        local part = data:sub((i - 1) * config.CHUNK_SIZE + 1, i * config.CHUNK_SIZE)
-        local d = drives[((i - 1) % #drives) + 1]
-        local f = fs.open(fs.combine(d.mount, chunkName(id, i)), "w")
-        if f then
-            f.write(part)
-            f.close()
-        end
+    if not writeFile(routePath(id), data) then
+        return nil, "cannot write route file"
     end
     manifest.routes[id] = {
         name = route.name,
         kind = route.kind,
-        chunks = count,
         points = #route.points,
     }
     storage.saveManifest()
@@ -1582,26 +1524,17 @@ function storage.saveRoute(route)
 end
 
 function storage.loadRoute(id)
-    scanDrives()
     local meta = manifest.routes[id]
     if not meta then return nil, "route not found" end
-    if #drives == 0 then return nil, "no disk drives present" end
-    local buf = {}
-    for i = 1, meta.chunks do
-        local d = drives[((i - 1) % #drives) + 1]
-        if not d then return nil, "disk missing for chunk " .. i end
-        local f = fs.open(fs.combine(d.mount, chunkName(id, i)), "r")
-        if not f then return nil, "chunk missing: " .. i end
-        buf[#buf + 1] = f.readAll()
-        f.close()
+    local points = readSerialized(routePath(id))
+    if type(points) ~= "table" then
+        return nil, "corrupt or missing route data"
     end
-    local points = textutils.unserialize(table.concat(buf))
-    if not points then return nil, "corrupt route data" end
     return { id = id, name = meta.name, kind = meta.kind, points = points }
 end
 
 function storage.deleteRoute(id)
-    storage.deleteChunks(id)
+    pcall(fs.delete, routePath(id))
     manifest.routes[id] = nil
     storage.saveManifest()
 end
@@ -1628,11 +1561,9 @@ function storage.findRouteByName(name)
 end
 
 function storage.freeSpace()
-    local total = 0
-    for _, d in ipairs(drives) do
-        total = total + (fs.getFreeSpace(d.mount) or 0)
-    end
-    return total
+    local free = fs.getFreeSpace(BASE)
+    if type(free) == "number" then return free end
+    return math.huge   -- "unlimited"
 end
 
 _G[MOD] = storage
@@ -1656,7 +1587,7 @@ local function writeFile(path, content)
 end
 
 local function main()
-    print("Autopilot installer, package version 1.3.0")
+    print("Autopilot installer, package version 1.4.0")
     local names = {}
     for path in pairs(FILES) do names[#names + 1] = path end
     table.sort(names)
