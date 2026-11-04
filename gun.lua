@@ -18,6 +18,13 @@ local CONFIG = {
     -- "forward", "right", "back" or "left".
     baseForward = "forward",
 
+    -- World position used as the ballistic origin:
+    -- "auto" detects local mount coordinates, "mount" trusts CC:CBC,
+    -- and "sensor" always uses the structure position plus cannonOffset.
+    positionSource = "auto",
+    mountPositionMismatch = 128,
+    cannonOffset = { forward = 0, up = 0, right = 0 },
+
     -- Ballistic search limits in world space.
     worldPitchMin = -30,
     worldPitchMax = 60,
@@ -80,6 +87,9 @@ local state = {
     solution = nil,
     info = nil,
     sensorData = nil,
+    cannonPosition = nil,
+    positionSourceUsed = "mount",
+    positionNotice = nil,
     lastError = nil,
     lastNotice = nil,
     stableUpdates = 0,
@@ -249,6 +259,38 @@ local function baseAxes(sensorData)
     end
 
     return { forward = forward, right = right, up = sensorData.up }
+end
+
+local function getCannonPosition(info, sensorData)
+    local mountPosition = vector(tonumber(info.x), tonumber(info.y), tonumber(info.z))
+    local sensorPosition = sensorData.position
+    local offset = CONFIG.cannonOffset
+
+    if not sensorPosition then
+        return mountPosition, "mount", "Sensor position unavailable; using raw mount coordinates"
+    end
+
+    local sensorBasedPosition = add(sensorPosition, add(
+        scale(sensorData.forward, tonumber(offset.forward) or 0),
+        add(
+            scale(sensorData.up, tonumber(offset.up) or 0),
+            scale(sensorData.right, tonumber(offset.right) or 0)
+        )
+    ))
+
+    if CONFIG.positionSource == "sensor" then
+        return sensorBasedPosition, "sensor", nil
+    elseif CONFIG.positionSource == "mount" then
+        return mountPosition, "mount", nil
+    elseif CONFIG.positionSource ~= "auto" then
+        return nil, nil, "Invalid positionSource in CONFIG"
+    end
+
+    local mismatch = length(add(mountPosition, scale(sensorBasedPosition, -1)))
+    if mismatch > CONFIG.mountPositionMismatch then
+        return sensorBasedPosition, "sensor", "Mount coordinates appear local; using structure position"
+    end
+    return mountPosition, "mount", nil
 end
 
 local function worldDirection(yaw, pitch)
@@ -481,9 +523,14 @@ local function calculateSolutions()
 
     if not info then return nil, infoError end
     if not sensorData then return nil, sensorError end
+
+    local cannon, positionSource, positionNotice = getCannonPosition(info, sensorData)
+    state.cannonPosition = cannon
+    state.positionSourceUsed = positionSource or "unknown"
+    state.positionNotice = positionNotice
+    if not cannon then return nil, positionNotice end
     if not state.target then return nil, "No target is set" end
 
-    local cannon = vector(tonumber(info.x), tonumber(info.y), tonumber(info.z))
     local trajectories, solveError = solveTrajectories(cannon, state.target)
     if not trajectories then return nil, solveError end
 
@@ -553,7 +600,7 @@ local function updateAim()
     local solutions, calculateError = calculateSolutions()
     state.solutions = solutions
     state.lastError = calculateError
-    state.lastNotice = nil
+    state.lastNotice = state.positionNotice
 
     if not solutions then
         state.solution = nil
@@ -601,6 +648,14 @@ local function formatStructurePosition()
     return "unavailable"
 end
 
+local function formatCannonPosition()
+    local position = state.cannonPosition
+    if position and position.x and position.y and position.z then
+        return string.format("%.2f %.2f %.2f", position.x, position.y, position.z)
+    end
+    return "unavailable"
+end
+
 local function monitorLine(line, text)
     monitor.setCursorPos(1, line)
     monitor.clearLine()
@@ -629,31 +684,33 @@ local function drawMonitor()
 
         monitorLine(6, "Ship X/Y/Z: " .. formatStructurePosition())
 
+        monitorLine(7, "Gun X/Y/Z: " .. formatCannonPosition())
+
         if state.info and tonumber(state.info.yaw) and tonumber(state.info.pitch) then
-            monitorLine(7, string.format("Mount Y/P: %.2f %.2f", state.info.yaw, state.info.pitch))
-            monitorLine(8, string.format("Assembled: %s  Speed: %.0f/%.0f",
+            monitorLine(8, string.format("Mount Y/P: %.2f %.2f", state.info.yaw, state.info.pitch))
+            monitorLine(9, string.format("Assembled: %s  Speed: %.0f/%.0f",
                 tostring(state.info.assembled),
                 tonumber(state.info.yawShaftSpeed) or 0,
                 tonumber(state.info.pitchShaftSpeed) or 0))
         else
-            monitorLine(7, "Mount telemetry unavailable")
-            monitorLine(8, "")
+            monitorLine(8, "Mount telemetry unavailable")
+            monitorLine(9, "")
         end
 
         if state.solution then
-            monitorLine(9, string.format("Aim Y/P: %.3f %.3f", state.solution.yaw, state.solution.pitch))
-            monitorLine(10, string.format("World Y/P: %.3f %.3f", state.solution.worldYaw, state.solution.worldPitch))
-            monitorLine(11, string.format("Range: %.1f  Precision: %.1f%%", state.solution.distance, state.solution.precision))
-            monitorLine(12, string.format("Flight: %d ticks  Fuze: %d", state.solution.airTime, state.solution.fuzeTime))
-            monitorLine(13, string.format("Settled: %d/%d", state.stableUpdates, CONFIG.stableUpdatesRequired))
+            monitorLine(10, string.format("Aim Y/P: %.3f %.3f", state.solution.yaw, state.solution.pitch))
+            monitorLine(11, string.format("World Y/P: %.3f %.3f", state.solution.worldYaw, state.solution.worldPitch))
+            monitorLine(12, string.format("Range: %.1f  Precision: %.1f%%", state.solution.distance, state.solution.precision))
+            monitorLine(13, string.format("Flight: %d ticks  Fuze: %d", state.solution.airTime, state.solution.fuzeTime))
+            monitorLine(14, string.format("Settled: %d/%d", state.stableUpdates, CONFIG.stableUpdatesRequired))
         else
-            monitorLine(9, "Aim: no solution")
-            for line = 10, 13 do monitorLine(line, "") end
+            monitorLine(10, "Aim: no solution")
+            for line = 11, 14 do monitorLine(line, "") end
         end
 
         local message = state.lastError or state.lastNotice or "Ready"
         monitor.setTextColor(state.lastError and colors.red or colors.lightGray)
-        monitorLine(14, string.sub(message, 1, 60))
+        monitorLine(15, string.sub(message, 1, 60))
         monitor.setTextColor(colors.white)
     end)
 end
@@ -674,9 +731,12 @@ local function printStatus()
     end
 
     if state.info then
+        print(string.format("Mount raw X/Y/Z: %.2f / %.2f / %.2f",
+            tonumber(state.info.x) or 0, tonumber(state.info.y) or 0, tonumber(state.info.z) or 0))
         print(string.format("Mount yaw/pitch: %.3f / %.3f | Assembled: %s",
             tonumber(state.info.yaw) or 0, tonumber(state.info.pitch) or 0, tostring(state.info.assembled)))
     end
+    print(string.format("Ballistic origin: %s | Source: %s", formatCannonPosition(), state.positionSourceUsed))
 
     if state.solution then
         print(string.format("Solution yaw/pitch: %.4f / %.4f", state.solution.yaw, state.solution.pitch))
@@ -695,6 +755,7 @@ local function printHelp()
     print("  aim | hold                     - resume or hold aiming")
     print("  arc <low|high>                 - select trajectory")
     print("  charges <n> | length <n>       - update ballistic settings")
+    print("  origin <auto|mount|sensor>     - select position source")
     print("  arm | disarm                   - enable or disable firing")
     print("  fire                           - fire when aimed and settled")
     print("  auto                           - toggle automatic firing")
@@ -757,6 +818,10 @@ local function handleCommand(line)
         CONFIG.barrelLength = math.max(1, math.floor(tonumber(arguments[2])))
         state.stableUpdates = 0
         print("Barrel length: " .. CONFIG.barrelLength)
+    elseif command == "origin" and (arguments[2] == "auto" or arguments[2] == "mount" or arguments[2] == "sensor") then
+        CONFIG.positionSource = arguments[2]
+        state.stableUpdates = 0
+        print("Position source: " .. CONFIG.positionSource)
     elseif command == "arm" then
         local ok, armError = pcall(function()
             mount.setComputerControl(true)
