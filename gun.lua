@@ -593,6 +593,14 @@ local function formatTarget()
     return string.format("%.1f %.1f %.1f", state.target.x, state.target.y, state.target.z)
 end
 
+local function formatStructurePosition()
+    local position = state.sensorData and state.sensorData.position
+    if position and position.x and position.y and position.z then
+        return string.format("%.2f %.2f %.2f", position.x, position.y, position.z)
+    end
+    return "unavailable"
+end
+
 local function monitorLine(line, text)
     monitor.setCursorPos(1, line)
     monitor.clearLine()
@@ -619,31 +627,33 @@ local function drawMonitor()
             monitorLine(5, "Ship Y/P/R: unavailable")
         end
 
+        monitorLine(6, "Ship X/Y/Z: " .. formatStructurePosition())
+
         if state.info and tonumber(state.info.yaw) and tonumber(state.info.pitch) then
-            monitorLine(6, string.format("Mount Y/P: %.2f %.2f", state.info.yaw, state.info.pitch))
-            monitorLine(7, string.format("Assembled: %s  Speed: %.0f/%.0f",
+            monitorLine(7, string.format("Mount Y/P: %.2f %.2f", state.info.yaw, state.info.pitch))
+            monitorLine(8, string.format("Assembled: %s  Speed: %.0f/%.0f",
                 tostring(state.info.assembled),
                 tonumber(state.info.yawShaftSpeed) or 0,
                 tonumber(state.info.pitchShaftSpeed) or 0))
         else
-            monitorLine(6, "Mount telemetry unavailable")
-            monitorLine(7, "")
+            monitorLine(7, "Mount telemetry unavailable")
+            monitorLine(8, "")
         end
 
         if state.solution then
-            monitorLine(8, string.format("Aim Y/P: %.3f %.3f", state.solution.yaw, state.solution.pitch))
-            monitorLine(9, string.format("World Y/P: %.3f %.3f", state.solution.worldYaw, state.solution.worldPitch))
-            monitorLine(10, string.format("Range: %.1f  Precision: %.1f%%", state.solution.distance, state.solution.precision))
-            monitorLine(11, string.format("Flight: %d ticks  Fuze: %d", state.solution.airTime, state.solution.fuzeTime))
-            monitorLine(12, string.format("Settled: %d/%d", state.stableUpdates, CONFIG.stableUpdatesRequired))
+            monitorLine(9, string.format("Aim Y/P: %.3f %.3f", state.solution.yaw, state.solution.pitch))
+            monitorLine(10, string.format("World Y/P: %.3f %.3f", state.solution.worldYaw, state.solution.worldPitch))
+            monitorLine(11, string.format("Range: %.1f  Precision: %.1f%%", state.solution.distance, state.solution.precision))
+            monitorLine(12, string.format("Flight: %d ticks  Fuze: %d", state.solution.airTime, state.solution.fuzeTime))
+            monitorLine(13, string.format("Settled: %d/%d", state.stableUpdates, CONFIG.stableUpdatesRequired))
         else
-            monitorLine(8, "Aim: no solution")
-            for line = 9, 12 do monitorLine(line, "") end
+            monitorLine(9, "Aim: no solution")
+            for line = 10, 13 do monitorLine(line, "") end
         end
 
         local message = state.lastError or state.lastNotice or "Ready"
         monitor.setTextColor(state.lastError and colors.red or colors.lightGray)
-        monitorLine(13, string.sub(message, 1, 60))
+        monitorLine(14, string.sub(message, 1, 60))
         monitor.setTextColor(colors.white)
     end)
 end
@@ -653,6 +663,7 @@ local function printStatus()
     print(string.format("Tracking: %s | Armed: %s | Auto fire: %s | Arc: %s",
         tostring(state.tracking), tostring(state.armed), tostring(state.autoFire), state.arc))
     print(string.format("Charges: %d | Barrel length: %d", CONFIG.powderCharges, CONFIG.barrelLength))
+    print("Structure X/Y/Z: " .. formatStructurePosition())
 
     if state.sensorData and state.sensorData.rotation then
         local rotation = state.sensorData.rotation
