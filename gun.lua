@@ -53,6 +53,7 @@ local CONFIG = {
     minimumPrecision = 85,
 
     -- Aiming and firing.
+    yawLimit = 10,
     yawTolerance = 0.20,
     pitchTolerance = 0.20,
     stableUpdatesRequired = 3,
@@ -61,13 +62,20 @@ local CONFIG = {
     autoFireCooldown = 3,
     autoAssemble = true,
 
-    -- An attached monitor is optional.
+    -- A speaker plays this sound once after a stable aim is acquired.
+    aimSoundEnabled = true,
+    aimSound = "minecraft:entity.player.levelup",
+    aimSoundVolume = 3,
+    aimSoundPitch = 1,
+
+    -- An attached monitor and speaker are optional.
     useMonitor = true,
 }
 
 local sensor = peripheral.find(CONFIG.sensorType)
 local mount = peripheral.find(CONFIG.mountType)
 local monitor = CONFIG.useMonitor and peripheral.find("monitor") or nil
+local speaker = CONFIG.aimSoundEnabled and peripheral.find("speaker") or nil
 
 if not sensor then
     error("No " .. CONFIG.sensorType .. " peripheral found", 0)
@@ -90,6 +98,8 @@ local state = {
     cannonPosition = nil,
     positionSourceUsed = "mount",
     positionNotice = nil,
+    initialYaw = nil,
+    aimAnnounced = false,
     lastError = nil,
     lastNotice = nil,
     stableUpdates = 0,
@@ -498,6 +508,9 @@ local function prepareSolution(raw, trajectory, sensorData)
 
     local direction = worldDirection(trajectory.worldYaw, raw.worldPitch)
     local yaw, pitch = toMountAngles(direction, axes)
+    if state.initialYaw and math.abs(angleDifference(yaw, state.initialYaw)) > CONFIG.yawLimit then
+        return nil, string.format("Required yaw %.2f is outside the +/-%.1f degree sector", yaw, CONFIG.yawLimit)
+    end
     if pitch < CONFIG.mountPitchMin or pitch > CONFIG.mountPitchMax then
         return nil, string.format("Required local pitch %.2f is outside mount limits", pitch)
     end
@@ -596,6 +609,19 @@ local function fireOnce()
     return true
 end
 
+local function playAimSound()
+    if not speaker or not CONFIG.aimSoundEnabled then return end
+    local ok, soundError = pcall(
+        speaker.playSound,
+        CONFIG.aimSound,
+        clamp(CONFIG.aimSoundVolume, 0, 3),
+        CONFIG.aimSoundPitch
+    )
+    if not ok then
+        state.lastNotice = "Aim sound failed: " .. tostring(soundError)
+    end
+end
+
 local function updateAim()
     local solutions, calculateError = calculateSolutions()
     state.solutions = solutions
@@ -605,6 +631,7 @@ local function updateAim()
     if not solutions then
         state.solution = nil
         state.stableUpdates = 0
+        state.aimAnnounced = false
         return
     end
 
@@ -618,10 +645,16 @@ local function updateAim()
         mount.setTargetAngles(state.solution.yaw, state.solution.pitch)
     end
 
-    if isAimed(state.info, state.solution) then
+    local aimedNow = state.tracking and isAimed(state.info, state.solution)
+    if aimedNow then
         state.stableUpdates = state.stableUpdates + 1
+        if state.stableUpdates >= CONFIG.stableUpdatesRequired and not state.aimAnnounced then
+            playAimSound()
+            state.aimAnnounced = true
+        end
     else
         state.stableUpdates = 0
+        state.aimAnnounced = false
     end
 
     if state.autoFire and state.tracking then
@@ -720,6 +753,8 @@ local function printStatus()
     print(string.format("Tracking: %s | Armed: %s | Auto fire: %s | Arc: %s",
         tostring(state.tracking), tostring(state.armed), tostring(state.autoFire), state.arc))
     print(string.format("Charges: %d | Barrel length: %d", CONFIG.powderCharges, CONFIG.barrelLength))
+    print(string.format("Yaw center: %.2f | Sector: +/-%.1f | Speaker: %s",
+        state.initialYaw or 0, CONFIG.yawLimit, speaker and "connected" or "missing"))
     print("Structure X/Y/Z: " .. formatStructurePosition())
 
     if state.sensorData and state.sensorData.rotation then
@@ -756,6 +791,7 @@ local function printHelp()
     print("  arc <low|high>                 - select trajectory")
     print("  charges <n> | length <n>       - update ballistic settings")
     print("  origin <auto|mount|sensor>     - select position source")
+    print("  center                         - set the yaw sector center")
     print("  arm | disarm                   - enable or disable firing")
     print("  fire                           - fire when aimed and settled")
     print("  auto                           - toggle automatic firing")
@@ -784,6 +820,7 @@ local function setTarget(x, y, z, arc)
     state.arc = arc or state.arc
     state.tracking = true
     state.stableUpdates = 0
+    state.aimAnnounced = false
     state.lastError = nil
     print("Target set: " .. formatTarget() .. " | Arc: " .. state.arc)
 end
@@ -822,6 +859,16 @@ local function handleCommand(line)
         CONFIG.positionSource = arguments[2]
         state.stableUpdates = 0
         print("Position source: " .. CONFIG.positionSource)
+    elseif command == "center" then
+        local info, centerError = readMount()
+        if info and tonumber(info.yaw) then
+            state.initialYaw = wrapYaw(tonumber(info.yaw))
+            state.stableUpdates = 0
+            state.aimAnnounced = false
+            print(string.format("Yaw sector center: %.2f", state.initialYaw))
+        else
+            print("Cannot set yaw center: " .. tostring(centerError))
+        end
     elseif command == "arm" then
         local ok, armError = pcall(function()
             mount.setComputerControl(true)
@@ -893,6 +940,8 @@ local function trackingLoop()
 end
 
 local startupOk, startupError = pcall(function()
+    local initialInfo = mount.getInfo()
+    state.initialYaw = wrapYaw(tonumber(initialInfo.yaw) or 0)
     mount.setComputerControl(true)
     if CONFIG.autoAssemble then
         mount.assemble(true)
@@ -909,7 +958,11 @@ if #arguments >= 3 then
 end
 
 print("Tank Cannon Controller loaded")
+print(string.format("Yaw sector: %.2f +/- %.1f degrees", state.initialYaw, CONFIG.yawLimit))
 print("Firing starts disarmed. Type arm to enable it.")
+if CONFIG.aimSoundEnabled and not speaker then
+    print("No speaker found; aim sound is disabled")
+end
 print("Type help for commands. Default trajectory: " .. state.arc)
 printHelp()
 
