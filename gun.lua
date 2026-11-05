@@ -327,84 +327,76 @@ local function toMountAngles(direction, axes)
     return wrapYaw(yaw + CONFIG.yawOffset), pitch + CONFIG.pitchOffset
 end
 
-local function verticalAirTimes(startY, targetY, verticalSpeed)
-    local time = 0
-    local ascendingTime = nil
-
-    if startY <= targetY then
-        while time < CONFIG.maxAirTime do
-            startY = startY + verticalSpeed
-            verticalSpeed = CONFIG.drag * verticalSpeed - CONFIG.gravity
-            time = time + 1
-
-            if startY > targetY then
-                ascendingTime = time - 1
-                break
-            end
-            if verticalSpeed < 0 then
-                return nil, nil
-            end
-        end
-    end
-
-    while time < CONFIG.maxAirTime do
-        startY = startY + verticalSpeed
-        verticalSpeed = CONFIG.drag * verticalSpeed - CONFIG.gravity
-        time = time + 1
-
-        if startY <= targetY then
-            return ascendingTime, time
-        end
-    end
-
-    return nil, nil
-end
-
 local function evaluatePitch(pitch, cannon, target, horizontalDistance)
     local pitchRad = pitch * RAD
     local initialSpeed = CONFIG.powderCharges * CONFIG.speedPerCharge
     local horizontalSpeed = math.cos(pitchRad) * initialSpeed
     local verticalSpeed = math.sin(pitchRad) * initialSpeed
+    local dragAmount = 1 - CONFIG.drag
 
-    if horizontalSpeed <= 1e-9 or CONFIG.drag <= 0 or CONFIG.drag >= 1 then
+    if horizontalSpeed <= 1e-9 or dragAmount <= 0 or dragAmount >= 1 then
         return nil
     end
 
-    local muzzleOffset = CONFIG.barrelLength * math.cos(pitchRad)
-    local remainingDistance = horizontalDistance - muzzleOffset
-    local logarithmArgument = 1 - remainingDistance * (1 - CONFIG.drag) / horizontalSpeed
-    if logarithmArgument <= 0 then
-        return nil
+    local horizontal = CONFIG.barrelLength * math.cos(pitchRad)
+    local height = cannon.y + CONFIG.barrelLength * math.sin(pitchRad)
+    local horizontalTime = horizontal >= horizontalDistance and 0 or nil
+    local ascendingTime = nil
+    local descendingTime = nil
+
+    -- Current CBC uses midpoint integration: position advances by the old
+    -- velocity plus half acceleration, then acceleration updates velocity.
+    for time = 1, CONFIG.maxAirTime do
+        local accelerationHorizontal = -dragAmount * horizontalSpeed
+        local accelerationVertical = -dragAmount * verticalSpeed - CONFIG.gravity
+        local nextHorizontal = horizontal + horizontalSpeed + accelerationHorizontal * 0.5
+        local nextHeight = height + verticalSpeed + accelerationVertical * 0.5
+
+        if not horizontalTime and horizontal < horizontalDistance and nextHorizontal >= horizontalDistance then
+            horizontalTime = time - 1 + (horizontalDistance - horizontal) / (nextHorizontal - horizontal)
+        end
+
+        if not ascendingTime and height <= target.y and nextHeight > target.y then
+            ascendingTime = time - 1 + (target.y - height) / (nextHeight - height)
+        end
+        if not descendingTime and height > target.y and nextHeight <= target.y then
+            descendingTime = time - 1 + (target.y - height) / (nextHeight - height)
+        end
+
+        horizontal, height = nextHorizontal, nextHeight
+        horizontalSpeed = horizontalSpeed + accelerationHorizontal
+        verticalSpeed = verticalSpeed + accelerationVertical
+
+        if horizontalTime and descendingTime then break end
+        if verticalSpeed < 0 and height < target.y and not descendingTime then return nil end
+        if not horizontalTime and horizontalSpeed > 0
+            and horizontal + horizontalSpeed / dragAmount < horizontalDistance then
+            return nil
+        end
     end
 
-    local horizontalTime = math.abs(math.log(logarithmArgument) / math.log(CONFIG.drag))
-    local muzzleY = cannon.y + math.sin(pitchRad) * CONFIG.barrelLength
-    local ascendingTime, descendingTime = verticalAirTimes(muzzleY, target.y, verticalSpeed)
-    if not descendingTime then
-        return nil
-    end
+    if not horizontalTime or not descendingTime then return nil end
 
     local ascendingError = ascendingTime and math.abs(horizontalTime - ascendingTime) or math.huge
     local descendingError = math.abs(horizontalTime - descendingTime)
-    local residual, airTime
+    local residual, exactAirTime
 
     if ascendingError < descendingError then
-        residual, airTime = ascendingError, ascendingTime
+        residual, exactAirTime = ascendingError, ascendingTime
     else
-        residual, airTime = descendingError, descendingTime
+        residual, exactAirTime = descendingError, descendingTime
     end
 
-    if not airTime or airTime <= 0 then
-        return nil
-    end
+    if not exactAirTime or exactAirTime <= 0 then return nil end
 
+    local airTime = math.max(1, math.floor(exactAirTime + 0.5))
     return {
         worldPitch = pitch,
         residual = residual,
         airTime = airTime,
         horizontalTime = horizontalTime,
-        precision = clamp((1 - residual / airTime) * 100, 0, 100),
-        fuzeTime = math.max(0, math.floor(airTime + residual / 2 + CONFIG.fuzeOffset)),
+        precision = clamp((1 - residual / exactAirTime) * 100, 0, 100),
+        fuzeTime = math.max(0, math.floor(exactAirTime + residual / 2 + CONFIG.fuzeOffset)),
     }
 end
 
@@ -490,6 +482,9 @@ local function solveTrajectories(cannon, target)
 
     if highSeed ~= lowSeed then
         high = refinePitch(highSeed.worldPitch, step, cannon, target, distance)
+        if high and high.precision < CONFIG.minimumPrecision then
+            high = nil
+        end
     end
 
     local worldYaw = wrapYaw(atan2(dz, dx) * DEG)
