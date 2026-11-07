@@ -3046,11 +3046,17 @@ function getMachineBaseName(name)
     return name:match("^(.-)_[0-9]+$") or name
 end
 
+local function getStockCount(stock, itemName)
+    local value = stock and stock[itemName]
+    if type(value) == "number" then return value end
+    return 0
+end
+
 function groupAvailable(itemName, stock, allowGroupSub)
-    local total = stock[itemName] or 0
+    local total = getStockCount(stock, itemName)
     if not itemName:find("#") then
         for k, v in pairs(stock) do
-            if k ~= itemName and v and v > 0 and parseItemKey(k) == itemName then
+            if k ~= itemName and type(v) == "number" and v > 0 and parseItemKey(k) == itemName then
                 total = total + v
             end
         end
@@ -3060,7 +3066,7 @@ function groupAvailable(itemName, stock, allowGroupSub)
         if group then
             for _, altName in ipairs(GROUPS[group]) do
                 if altName ~= itemName then
-                    total = total + (stock[altName] or 0)
+                    total = total + getStockCount(stock, altName)
                 end
             end
         end
@@ -3186,7 +3192,7 @@ local itemsToCheck = { itemName }
 local seenCheck = { [itemName] = true }
 if not itemName:find("#") then
 for k, v in pairs(stock) do
-if v and v > 0 and not seenCheck[k] and parseItemKey(k) == itemName then
+if type(v) == "number" and v > 0 and not seenCheck[k] and parseItemKey(k) == itemName then
 seenCheck[k] = true
 table.insert(itemsToCheck, k)
 end
@@ -3199,9 +3205,9 @@ seenCheck[altName] = true
 table.insert(itemsToCheck, altName)
 end
 end
-if (stock[itemName] or 0) < countNeeded and #itemsToCheck > 1 then
+if getStockCount(stock, itemName) < countNeeded and #itemsToCheck > 1 then
 table.sort(itemsToCheck, function(a, b)
-local sa, sb = stock[a] or 0, stock[b] or 0
+local sa, sb = getStockCount(stock, a), getStockCount(stock, b)
 if sa ~= sb then return sa > sb end
 if a == itemName then return true end
 if b == itemName then return false end
@@ -3210,7 +3216,7 @@ end)
 end
 end
 for _, item in ipairs(itemsToCheck) do
-local available = stock[item] or 0
+local available = getStockCount(stock, item)
 if available >= countNeeded then
 stock[item] = available - countNeeded
 countNeeded = 0
@@ -3237,7 +3243,7 @@ for _, inp in ipairs(frec.inputs or {}) do
 simFluidConsume(inp.name, inp.amount * fops, stock, missing, {}, visited)
 end
 local surplus = fops * fperOp - countNeeded
-if surplus > 0 then stock[itemName] = (stock[itemName] or 0) + surplus end
+if surplus > 0 then stock[itemName] = getStockCount(stock, itemName) + surplus end
 table.insert(craftPlan, {
 item = itemName, count = fops, output_count = fperOp,
 fluid_craft = true, fluidRecipe = frec, fluidAmount = fops * fperOp,
@@ -3273,7 +3279,7 @@ for _, inp in ipairs(frec.inputs or {}) do
 simFluidConsume(inp.name, inp.amount * fops, stock, missing, {}, visited)
 end
 local surplus = fops * fperOp - countNeeded
-if surplus > 0 then stock[itemName] = (stock[itemName] or 0) + surplus end
+if surplus > 0 then stock[itemName] = getStockCount(stock, itemName) + surplus end
 table.insert(craftPlan, {
 item = itemName, count = fops, output_count = fperOp,
 fluid_craft = true, fluidRecipe = frec, fluidAmount = fops * fperOp,
@@ -3363,7 +3369,7 @@ local rawBatches
 if stepAllowSub and isWoodSpecificItem(targetItem) and ingCountPerCraft > 1 and ITEM_GROUPS[ingName] then
 rawBatches = 0
 for _, sp in ipairs(GROUPS[ITEM_GROUPS[ingName]] or {ingName}) do
-rawBatches = rawBatches + math.floor((stock[sp] or 0) / ingCountPerCraft)
+rawBatches = rawBatches + math.floor(getStockCount(stock, sp) / ingCountPerCraft)
 end
 else
 local ingAvail = groupAvailable(ingName, stock, stepAllowSub)
@@ -3392,7 +3398,7 @@ local toDeduct = math.min(availTools, brokenTools)
 if toDeduct > 0 then
 for k, v in pairs(stock) do
 if toDeduct <= 0 then break end
-if v and v > 0 and (k == bToolKey or parseItemKey(k) == bToolKey) then
+if type(v) == "number" and v > 0 and (k == bToolKey or parseItemKey(k) == bToolKey) then
 local d = math.min(v, toDeduct)
 stock[k] = v - d
 toDeduct = toDeduct - d
@@ -3406,25 +3412,25 @@ elseif stepAllowSub and isWoodSpecificItem(targetItem) and ingCountPerCraft > 1 
 local grpList = GROUPS[ITEM_GROUPS[ingName]] or {ingName}
 local spOrder = {}
 for _, sp in ipairs(grpList) do spOrder[#spOrder + 1] = sp end
-table.sort(spOrder, function(a, b) return (stock[a] or 0) > (stock[b] or 0) end)
+table.sort(spOrder, function(a, b) return getStockCount(stock, a) > getStockCount(stock, b) end)
 local remBatches = plannedBatches
 for _, sp in ipairs(spOrder) do
 if remBatches <= 0 then break end
-local b = math.min(remBatches, math.floor((stock[sp] or 0) / ingCountPerCraft))
+local b = math.min(remBatches, math.floor(getStockCount(stock, sp) / ingCountPerCraft))
 if b > 0 then
-stock[sp] = (stock[sp] or 0) - b * ingCountPerCraft
+stock[sp] = getStockCount(stock, sp) - b * ingCountPerCraft
 remBatches = remBatches - b
 end
 end
 if remBatches > 0 then
 local savedRem = {}
 for _, sp in ipairs(grpList) do
-savedRem[sp] = stock[sp] or 0
+savedRem[sp] = getStockCount(stock, sp)
 stock[sp] = 0
 end
 calculateCraft(ingName, remBatches * ingCountPerCraft, stock, missing, blocked, craftPlan, visited, allowPartial, stepAllowSub)
 for _, sp in ipairs(grpList) do
-stock[sp] = (stock[sp] or 0) + (savedRem[sp] or 0)
+stock[sp] = getStockCount(stock, sp) + (savedRem[sp] or 0)
 end
 end
 else
@@ -3444,7 +3450,7 @@ break
 end
 end
 local surplus = totalProduced - countNeeded
-if surplus > 0 then stock[targetItem] = (stock[targetItem] or 0) + surplus end
+if surplus > 0 then stock[targetItem] = getStockCount(stock, targetItem) + surplus end
 table.insert(craftPlan, {
 item = targetItem,
 count = craftsCount,
@@ -4147,19 +4153,20 @@ local result = math.min(have + best, have + FLUID_MAX_CAP)
 if not tainted then _mfcMemo[fluidName] = result end
 return result, tainted
 end
+local initializedFluidStocks = setmetatable({}, { __mode = "k" })
 simFluidConsume = function(fluidName, amountMb, stock, missing, fvisited, itemVisited)
 calcNodes = calcNodes + 1
 if calcBudget > 0 and calcNodes > calcBudget then return end
 if calcNodes % 1024 == 0 then sleep(0) end
 if not amountMb or amountMb <= 0 then return end
-if not stock.__fl then
-stock.__fl = true
+if not initializedFluidStocks[stock] then
+initializedFluidStocks[stock] = true
 for k, v in pairs(getFluidInventoryCached()) do
 if stock[k] == nil then stock[k] = v end
 end
 end
 local key = fluidKey(fluidName)
-local have = stock[key] or 0
+local have = getStockCount(stock, key)
 if have >= amountMb then stock[key] = have - amountMb; return end
 local shortfall = amountMb - have
 stock[key] = 0
@@ -4206,7 +4213,7 @@ end
 fvisited[fluidName] = nil
 local fops = math.ceil(shortfall / usedP.perOp)
 local surplus = fops * usedP.perOp - shortfall
-if surplus > 0 then stock[key] = (stock[key] or 0) + surplus end
+if surplus > 0 then stock[key] = getStockCount(stock, key) + surplus end
 end
 ITEM_MAX_CAP = 10000
 local _micMemo, _micStock = {}, nil
