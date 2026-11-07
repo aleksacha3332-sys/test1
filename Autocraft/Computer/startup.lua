@@ -11444,7 +11444,7 @@ function _diB13(w, h, touchZones)
 
     local peripherals = peripheral.getNames()
     local startRowY = 12
-    local itemsPerPage = h - startRowY - 2
+    local itemsPerPage = math.max(1, h - startRowY - 2)
     local validPeriphs = {}
     local hiddenMap = Config.hidden_network_types or {}
     local keepActive = (Config.filter_keep_active ~= false)
@@ -11486,16 +11486,24 @@ function _diB13(w, h, touchZones)
         drawText(math.max(2, math.floor((w - #emptyMsg) / 2) + 1), startRowY + 2, emptyMsg, colors.yellow, colors.black)
     end
 
+    local btnX = math.max(2, w - 65)
+    local nameWidth = math.max(1, btnX - 3)
+    local function fitNetworkName(name)
+        if #name <= nameWidth then return name end
+        if nameWidth <= 3 then return name:sub(1, nameWidth) end
+        local headLen = math.max(1, math.floor((nameWidth - 1) * 0.45))
+        local tailLen = nameWidth - headLen - 1
+        return name:sub(1, headLen) .. "~" .. name:sub(#name - tailLen + 1)
+    end
+
     for idx = startIdx, endIdx do
         local p = validPeriphs[idx]
-        local pDisplay = getMachineDisplay(p)
+        local pDisplay = fitNetworkName(getMachineDisplay(p))
         local rowBg = (idx % 2 == 0) and colors.gray or colors.black
         _bufClearLine(rowY, rowBg)
         drawText(2, rowY, pDisplay, colors.white, rowBg)
 
-        -- Role button panel (width ~65 characters)
-        local btnX = w - 65
-        if btnX < #pDisplay + 3 then btnX = #pDisplay + 3 end
+        -- Fixed role panel: long peripheral names never push buttons off-screen.
         local inactiveFg = colors.lightGray
 
         -- 1. [BUF] (Dump buffer)
