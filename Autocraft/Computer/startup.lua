@@ -23,6 +23,7 @@ local Config = {
     buffer = nil,
     fluid_tanks = {},
     train_box = nil,
+    project_chest = nil,
     turtles = {},
     autostock_paused = false,
     paired_remotes = {}
@@ -1695,6 +1696,7 @@ function StorageIndex.clearRoles(p)
     end
     if Config.storages then Config.storages[p] = nil end
     if Config.train_box == p then Config.train_box = nil end
+    if Config.project_chest == p then Config.project_chest = nil end
     if Config.turtles then Config.turtles[p] = nil end
     if Config.fluid_tanks then Config.fluid_tanks[p] = nil end
 end
@@ -3032,7 +3034,7 @@ function getAvailableMachines()
         and not (Config.main_vaults and Config.main_vaults[p]) -- <--- Exclude MAIN
         and p ~= Config.buffer                                -- <--- Exclude BUF
         and not (Config.fluid_tanks and Config.fluid_tanks[p])
-        and peripheral.getType(p) ~= "block_reader" then
+        and p ~= Config.project_chest then
             table.insert(list, p)
         end
     end
@@ -5887,61 +5889,8 @@ function executeCompositeStep(step, ctx, node, drawProgress, desc)
                 end
             end
 
-            -- B. Feed base items for this batch ONLY
-            if #baseIngList > 0 then
-                for _, st in ipairs(stations) do
-                    if st.batchStarted < st.batchOps then
-                        if st.isSingleSlotShared then
-                            local tpHas = false
-                            local sL, tItems = pcall(st.targetP.list)
-                            if sL and tItems then
-                                for _, it in pairs(tItems) do
-                                    if it and (it.count or 0) > 0 then tpHas = true break end
-                                end
-                            end
-                            if not tpHas then
-                                local allPushed = true
-                                for _, bEntry in ipairs(baseIngList) do
-                                    local bCount = bEntry.count or 1
-                                    local pushedB = pushFromStorage(bEntry.item, bCount, st.targetPlatform, nil, allowSub)
-                                    if pushedB < bCount then allPushed = false end
-                                end
-                                if allPushed then
-                                    st.batchStarted = st.batchStarted + 1
-                                    lastActivityTick = ticks
-                                end
-                            end
-                        else
-                            local maxPossibleOps = st.batchOps - st.batchStarted
-                            for _, bEntry in ipairs(baseIngList) do
-                                local curBase = 0
-                                local sL, tItems = pcall(st.targetP.list)
-                                if sL and tItems then
-                                    for _, it in pairs(tItems) do
-                                        if it and itemMatchesOrGroup(it.name, bEntry.item, allowSub) then
-                                            curBase = curBase + (it.count or 0)
-                                        end
-                                    end
-                                end
-                                local bPerOp = bEntry.count or 1
-                                local roomOps = math.floor((64 - curBase) / bPerOp)
-                                if roomOps < maxPossibleOps then maxPossibleOps = roomOps end
-                            end
-                            local opsToPush = math.max(0, maxPossibleOps)
-                            if opsToPush > 0 then
-                                for _, bEntry in ipairs(baseIngList) do
-                                    local bPerOp = bEntry.count or 1
-                                    pushFromStorage(bEntry.item, opsToPush * bPerOp, st.targetPlatform, nil, allowSub)
-                                end
-                                st.batchStarted = st.batchStarted + opsToPush
-                                lastActivityTick = ticks
-                            end
-                        end
-                    end
-                end
-            end
-
-            -- C. Collect outputs and failure scraps from outP
+            -- B. Collect outputs and failure scraps from outP FIRST
+            -- (Cleans finished products and byproducts like tree_bark so platforms don't clog)
             for _, st in ipairs(stations) do
                 local sList, curItems = pcall(st.outP.list)
                 if sList and curItems then
@@ -5974,6 +5923,14 @@ function executeCompositeStep(step, ctx, node, drawProgress, desc)
                                                 break
                                             end
                                         end
+                                        if not isByproduct and step.results then
+                                            for _, res in ipairs(step.results) do
+                                                if res.role == "byproduct" and res.item and itemMatches(it.name, res.item) then
+                                                    isByproduct = true
+                                                    break
+                                                end
+                                            end
+                                        end
                                         if not isByproduct then
                                             -- Unknown failure scrap (not a declared byproduct): count as finished attempt
                                             batchDoneOps = batchDoneOps + moved
@@ -5986,8 +5943,77 @@ function executeCompositeStep(step, ctx, node, drawProgress, desc)
                 end
             end
 
-            -- D. Batch completion / safety timeout when platforms are empty
-            if batchDoneOps < batchTargetOps and (ticks - lastActivityTick >= 16) then
+            -- C. Feed base items for this batch ONLY (with accurate pushed accounting & hot-refill)
+            if #baseIngList > 0 then
+                for _, st in ipairs(stations) do
+                    if st.batchStarted < st.batchOps then
+                        local hasForeign = false
+                        local curBase = 0
+                        local sL, tItems = pcall(st.targetP.list)
+                        if sL and tItems then
+                            for _, it in pairs(tItems) do
+                                if it and (it.count or 0) > 0 then
+                                    local matchesBase = false
+                                    for _, bEntry in ipairs(baseIngList) do
+                                        if itemMatchesOrGroup(it.name, bEntry.item, allowSub) then
+                                            matchesBase = true
+                                            curBase = curBase + it.count
+                                            break
+                                        end
+                                    end
+                                    if not matchesBase then
+                                        hasForeign = true
+                                    end
+                                end
+                            end
+                        end
+
+                        if not hasForeign then
+                            if st.isSingleSlotShared then
+                                if curBase == 0 then
+                                    local allPushedOps = 1
+                                    for _, bEntry in ipairs(baseIngList) do
+                                        local bCount = bEntry.count or 1
+                                        local pushedB = pushFromStorage(bEntry.item, bCount, st.targetPlatform, nil, allowSub) or 0
+                                        local opsMoved = math.floor(pushedB / bCount)
+                                        if opsMoved < allPushedOps then allPushedOps = opsMoved end
+                                    end
+                                    if allPushedOps > 0 then
+                                        st.batchStarted = st.batchStarted + allPushedOps
+                                        lastActivityTick = ticks
+                                    end
+                                end
+                            else
+                                local stillNeededOps = st.batchOps - st.batchStarted
+                                local maxPossibleOps = stillNeededOps
+                                for _, bEntry in ipairs(baseIngList) do
+                                    local bPerOp = bEntry.count or 1
+                                    local roomOps = math.floor((64 - curBase) / bPerOp)
+                                    if roomOps < maxPossibleOps then maxPossibleOps = roomOps end
+                                end
+                                local opsToPush = math.max(0, maxPossibleOps)
+                                -- Hot-refill: push whenever platform is empty or room frees up (curBase <= 48 or all needed fits)
+                                if opsToPush > 0 and (curBase <= 48 or opsToPush >= stillNeededOps) then
+                                    local actualPushedOps = opsToPush
+                                    for _, bEntry in ipairs(baseIngList) do
+                                        local bPerOp = bEntry.count or 1
+                                        local movedB = pushFromStorage(bEntry.item, opsToPush * bPerOp, st.targetPlatform, nil, allowSub) or 0
+                                        local opsMoved = math.floor(movedB / bPerOp)
+                                        if opsMoved < actualPushedOps then actualPushedOps = opsMoved end
+                                    end
+                                    if actualPushedOps > 0 then
+                                        st.batchStarted = st.batchStarted + actualPushedOps
+                                        lastActivityTick = ticks
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+
+            -- D. Batch completion / fast safety timeout when platforms are empty
+            if batchDoneOps < batchTargetOps then
                 local allFed = true
                 local allEmpty = true
                 for _, st in ipairs(stations) do
@@ -5997,7 +6023,19 @@ function executeCompositeStep(step, ctx, node, drawProgress, desc)
                     local sO, oItems = pcall(st.outP.list)
                     if sO and oItems and next(oItems) then allEmpty = false break end
                 end
-                if allEmpty and (allFed or (ticks - lastActivityTick >= 120)) then
+                if allEmpty then
+                    if allFed then
+                        -- Fast resolution: platforms confirmed empty and all ops fed!
+                        if ticks - lastActivityTick >= 2 then
+                            batchDoneOps = batchTargetOps
+                        end
+                    else
+                        -- Starvation safety: platforms empty and nothing moving
+                        if ticks - lastActivityTick >= 8 then
+                            batchDoneOps = batchTargetOps
+                        end
+                    end
+                elseif ticks - lastActivityTick >= 120 then
                     batchDoneOps = batchTargetOps
                 end
             end
@@ -6821,12 +6859,14 @@ runnableOps = runnableOps or 0
 local owes = entry.doneItems < entry.pendingItems
 local idleTicks = waited - entry.lastCollectTick
 local quietNeed = math.max(4, (entry.maxGap or 0) * 2 + 4)
-if owes then
+if owes and hasInput then
 if (entry.collectCount or 0) >= 2 then
-quietNeed = math.max(20, quietNeed)
+quietNeed = math.max(10, quietNeed)
 else
-quietNeed = math.max(120, quietNeed)
+quietNeed = math.max(30, quietNeed)
 end
+elseif not hasInput and not hasLeftover then
+quietNeed = math.min(quietNeed, 4)
 end
 if hasInput and runnableOps == 0 and not hasLeftover
 and idleTicks >= math.max(6, quietNeed) then
@@ -6841,7 +6881,7 @@ entry.starve = (entry.starve or 0) + 1
 if entry.starve >= 6 then entry.exhausted = true end
 end
 elseif entry.remainOps > 0 then
-if not hasInput and not hasLeftover then
+if (not hasInput or runnableOps <= 16) and not hasLeftover then
 local acceptedOps = pushBatch(entry.name, entry.remainOps)
 if acceptedOps > 0 then
 entry.remainOps    = entry.remainOps - acceptedOps
@@ -6858,8 +6898,11 @@ elseif not entry.exhausted and entry.hasEverCollected and not hasInput
 and not hasLeftover and idleTicks >= quietNeed then
 local deficit = totalExpected - totalCollected
 if deficit > 0 then
+local activeCount = 0
+for _, e in ipairs(machineData) do if not e.exhausted then activeCount = activeCount + 1 end end
 local opsNeeded = math.ceil(deficit / outputPerOp)
-local accepted  = pushBatch(entry.name, opsNeeded)
+local perMachine = math.max(1, math.ceil(opsNeeded / math.max(1, activeCount)))
+local accepted  = pushBatch(entry.name, math.min(opsNeeded, perMachine))
 if accepted > 0 then
 nodeTopup             = true
 entry.pendingItems    = entry.pendingItems + accepted * outputPerOp
@@ -9488,9 +9531,16 @@ function drawCompositePopup(w, h, touchZones, popupRect, popupZoneStart)
 
     elseif compositePopup.mode == "pick_item" then
         local snap = getStorageInventoryCached()
+        local srch = (compositePopup.search or ""):lower()
         local itemList = {}
         for iN, iC in pairs(snap) do
-            if iC and iC > 0 then table.insert(itemList, {name = iN, count = iC}) end
+            if iC and iC > 0 then
+                local disp = (getItemDisplayName(iN) or ""):lower()
+                local raw  = (iN or ""):lower()
+                if srch == "" or disp:find(srch, 1, true) or raw:find(srch, 1, true) then
+                    table.insert(itemList, {name = iN, count = iC})
+                end
+            end
         end
         table.sort(itemList, function(a, b)
             return naturalSortCompare(getItemDisplayName(a.name), getItemDisplayName(b.name))
@@ -9522,7 +9572,7 @@ function drawCompositePopup(w, h, touchZones, popupRect, popupZoneStart)
         local pEnd    = math.min(pStart + perPage - 1, #itemList)
 
         if #itemList == 0 then
-            local emptyM = "No items available in storage."
+            local emptyM = (srch ~= "") and "(no matches)" or "No items available in storage."
             drawText(pX + math.floor((pW - #emptyM) / 2), pY + math.floor(pH / 2), emptyM, colors.lightGray, colors.gray)
         else
             for ci = 1, cols - 1 do
@@ -9540,7 +9590,7 @@ function drawCompositePopup(w, h, touchZones, popupRect, popupZoneStart)
                 local mRowY = listTop + rowI
                 local it    = itemList[ii]
                 local iDisp = getItemDisplayName(it.name)
-                local cntS  = "x" .. it.count
+                local cntS  = tostring(it.count)
                 local maxN  = colW - #cntS - 3
                 if #iDisp > maxN then iDisp = iDisp:sub(1, maxN) end
                 drawText(cellX, mRowY, iDisp, colors.white, colors.gray)
@@ -9558,15 +9608,37 @@ function drawCompositePopup(w, h, touchZones, popupRect, popupZoneStart)
         end
         local pgInfo = string.format(" %d/%d ", pPage, pTotal)
         drawText(pX + 2 + #arrL, navY, pgInfo, colors.yellow, colors.gray)
-        drawText(pX + 2 + #arrL + #pgInfo, navY, arrR, pPage < pTotal and colors.white or colors.lightGray, colors.gray)
+        local rx = pX + 2 + #arrL + #pgInfo
+        drawText(rx, navY, arrR, pPage < pTotal and colors.white or colors.lightGray, colors.gray)
         if pPage < pTotal then
-            local rx = pX + 2 + #arrL + #pgInfo
             table.insert(touchZones, {id="comp_popup_next", x1=rx, x2=rx+#arrR-1, y=navY})
         end
+        local navEnd = rx + #arrR
 
         local cBtn = " [ CANCEL ] "
-        drawText(pX + pW - #cBtn - 2, navY, cBtn, colors.white, colors.red)
-        table.insert(touchZones, {id="comp_popup_cancel", x1=pX+pW-#cBtn-2, x2=pX+pW-3, y=navY})
+        local cBtnX = pX + pW - #cBtn - 2
+        drawText(cBtnX, navY, cBtn, colors.white, colors.red)
+        table.insert(touchZones, {id="comp_popup_cancel", x1=cBtnX, x2=cBtnX+#cBtn-1, y=navY})
+
+        local srchCur = compositePopup.search or ""
+        local hasClr = (srchCur ~= "")
+        local availW = (cBtnX - 1) - (navEnd + 1)
+        local maxBoxW = math.max(6, availW - 10 - (hasClr and 4 or 0))
+        local srchDisp = (srchCur == "") and "<type name...>" or srchCur
+        if #srchDisp > maxBoxW then srchDisp = srchDisp:sub(1, maxBoxW) end
+        local srchBox = "[ " .. srchDisp .. " ]"
+        local srchFullW = 6 + #srchBox + (hasClr and 4 or 0)
+        local srchX = navEnd + math.max(1, math.floor((availW - srchFullW) / 2))
+        local sFg = compositePopup.searchActive and colors.black or (srchCur == "" and colors.gray or colors.white)
+        local sBg = compositePopup.searchActive and colors.white or colors.lightGray
+        drawText(srchX, navY, "FIND: ", colors.lightGray, colors.gray)
+        drawText(srchX + 6, navY, srchBox, sFg, sBg)
+        table.insert(touchZones, {id="comp_search_focus", x1=srchX, x2=srchX+6+#srchBox-1, y=navY})
+        if hasClr then
+            local clrBtn = " [X]"
+            drawText(srchX + 6 + #srchBox, navY, clrBtn, colors.white, colors.red)
+            table.insert(touchZones, {id="comp_search_clear", x1=srchX+6+#srchBox, x2=srchX+6+#srchBox+#clrBtn-1, y=navY})
+        end
         return popupRect, popupZoneStart
 
     elseif compositePopup.mode == "pick_fluid" then
@@ -11373,6 +11445,7 @@ function _diB13(w, h, touchZones)
     local function isPeriphAssigned(p)
         if Config.buffer == p then return true end
         if Config.train_box == p then return true end
+        if Config.project_chest == p then return true end
         if Config.main_vaults and Config.main_vaults[p] then return true end
         if Config.storages and Config.storages[p] then return true end
         if Config.turtles and Config.turtles[p] then return true end
@@ -11413,8 +11486,8 @@ function _diB13(w, h, touchZones)
         _bufClearLine(rowY, rowBg)
         drawText(2, rowY, pDisplay, colors.white, rowBg)
 
-        -- Role button panel (width ~56 characters)
-        local btnX = w - 57
+        -- Role button panel (width ~65 characters)
+        local btnX = w - 65
         if btnX < #pDisplay + 3 then btnX = #pDisplay + 3 end
         local inactiveFg = colors.lightGray
 
@@ -11454,6 +11527,13 @@ function _diB13(w, h, touchZones)
         if tankObj and tankObj.tanks ~= nil then
             drawText(btnX + 50, rowY, " [TNK] ", isFluidTank and colors.black or inactiveFg, isFluidTank and colors.lime or rowBg)
             table.insert(touchZones, {id="toggle_fluid_tank", arg=p, x1=btnX+50, x2=btnX+56, y=rowY})
+        end
+
+        -- 8. [PROJ] (Dedicated Create Clipboard chest)
+        local isProjectChest = (Config.project_chest == p)
+        if tankObj and tankObj.list and tankObj.getItemDetail then
+            drawText(btnX + 57, rowY, " [PROJ] ", isProjectChest and colors.black or inactiveFg, isProjectChest and colors.yellow or rowBg)
+            table.insert(touchZones, {id="set_project_chest", arg=p, x1=btnX+57, x2=btnX+64, y=rowY})
         end
 
         rowY = rowY + 1
@@ -12812,58 +12892,91 @@ local ProjectState = {
     subTab = "CHECKLIST",
     sortMode = "STATUS",
     page = 1,
-    selectedReader = nil,
     selectedDest = nil,
     pickerMode = nil,
     pickerPage = 1,
     rawClipboardItems = {},
+    rawClipboardPages = {},
+    clipboardSlot = nil,
     items = {},
     missingRecipes = {},
     rawDeficits = {},
     totalTypes = 0,
     totalPieces = 0,
     readyTypes = 0,
-    lastScanMsg = "Press [SCAN CLIPBOARD] to read checklist from Block Reader.",
+    lastScanMsg = "Assign a chest with [PROJ] in NETWORK, then scan its Clipboard.",
     lastScanColor = colors.lightGray,
     hasScanned = false,
 }
 
-function isClipboardOnReader(readerName)
-    if not readerName or not peripheral.isPresent(readerName) then return false end
-    local rdr = peripheral.wrap(readerName)
-    if not rdr or not rdr.getBlockName then return false end
-    local okN, bName = pcall(rdr.getBlockName)
-    if not okN or not bName or bName == "minecraft:air" or bName == "nil" then
-        return false
-    end
-    if tostring(bName):find("clipboard") then
-        return true
-    end
-    return false
+function clearProjectData(message)
+    ProjectState.hasScanned = false
+    ProjectState.rawClipboardItems = {}
+    ProjectState.rawClipboardPages = {}
+    ProjectState.clipboardSlot = nil
+    ProjectState.items = {}
+    ProjectState.missingRecipes = {}
+    ProjectState.rawDeficits = {}
+    ProjectState.totalTypes = 0
+    ProjectState.totalPieces = 0
+    ProjectState.readyTypes = 0
+    ProjectState.page = 1
+    ProjectState.lastScanMsg = message or "Project cleared. Scan the Clipboard in the assigned chest."
+    ProjectState.lastScanColor = colors.lightGray
 end
 
-function getProjectBlockReaders()
-    local list = {}
-    for _, name in ipairs(peripheral.getNames()) do
-        local pType = peripheral.getType(name)
-        if pType == "block_reader" or (peripheral.hasType and peripheral.hasType(name, "block_reader")) then
-            table.insert(list, name)
+local function getClipboardPages(detail)
+    if type(detail) ~= "table" or detail.name ~= "create:clipboard" then return nil end
+    if type(detail.clipboard) ~= "table" or type(detail.clipboard.pages) ~= "table" then
+        return nil
+    end
+    return detail.clipboard.pages
+end
+
+local function getSortedNumericKeys(tbl)
+    local keys = {}
+    for key in pairs(tbl or {}) do
+        if type(key) == "number" then table.insert(keys, key) end
+    end
+    table.sort(keys)
+    return keys
+end
+
+function readProjectClipboard()
+    local chestName = Config.project_chest
+    if not chestName or chestName == "" then
+        return nil, "Assign a Clipboard chest with [PROJ] in NETWORK."
+    end
+    if not peripheral.isPresent(chestName) then
+        return nil, "Assigned project chest is offline: " .. tostring(chestName)
+    end
+
+    local chest = peripheral.wrap(chestName)
+    if not chest or not chest.list or not chest.getItemDetail then
+        return nil, "Assigned peripheral does not support inventory item details."
+    end
+
+    local okList, contents = pcall(chest.list)
+    if not okList or type(contents) ~= "table" then
+        return nil, "Failed to list the assigned project chest."
+    end
+
+    for _, slot in ipairs(getSortedNumericKeys(contents)) do
+        local okDetail, detail = pcall(chest.getItemDetail, slot)
+        if okDetail then
+            local pages = getClipboardPages(detail)
+            if pages then
+                return {
+                    source = chestName,
+                    slot = slot,
+                    detail = detail,
+                    pages = pages,
+                }
+            end
         end
     end
-    table.sort(list)
-    if #list == 0 then
-        ProjectState.selectedReader = nil
-    else
-        if not ProjectState.selectedReader and Config.project_reader then
-            ProjectState.selectedReader = Config.project_reader
-        end
-        local found = false
-        for _, n in ipairs(list) do
-            if n == ProjectState.selectedReader then found = true; break end
-        end
-        if not found then ProjectState.selectedReader = list[1] end
-    end
-    return list
+
+    return nil, "No Create Clipboard found in the assigned project chest."
 end
 
 function getProjectDestinations()
@@ -12880,7 +12993,7 @@ function getProjectDestinations()
         end
     end
     for _, name in ipairs(peripheral.getNames()) do
-        if not seen[name] and name ~= Config.buffer
+        if not seen[name] and name ~= Config.buffer and name ~= Config.project_chest
         and not (Config.main_vaults and Config.main_vaults[name])
         and not (Config.turtles and Config.turtles[name])
         and not SYSTEM_SIDES[name] then
@@ -13037,81 +13150,49 @@ function refreshProjectAnalysis(stockInv)
     sortProjectItems()
 end
 
-function extractClipboardPages(blockData)
-    if not blockData or type(blockData) ~= "table" then return nil end
-    if blockData.components and blockData.components["create:clipboard_content"] then
-        local cc = blockData.components["create:clipboard_content"]
-        if type(cc) == "table" and type(cc.pages) == "table" then
-            return cc.pages
-        end
-    end
-    if blockData.Item and type(blockData.Item) == "table" and blockData.Item.components then
-        local cc = blockData.Item.components["create:clipboard_content"]
-        if type(cc) == "table" and type(cc.pages) == "table" then
-            return cc.pages
-        end
-    end
-    if type(blockData.Items) == "table" then
-        for _, slotItem in pairs(blockData.Items) do
-            if type(slotItem) == "table" and slotItem.components and slotItem.components["create:clipboard_content"] then
-                local cc = slotItem.components["create:clipboard_content"]
-                if type(cc) == "table" and type(cc.pages) == "table" then
-                    return cc.pages
-                end
-            end
-        end
-    end
-    return nil
-end
-
 function scanProjectClipboard()
-    local readers = getProjectBlockReaders()
-    if #readers == 0 or not ProjectState.selectedReader then
-        ProjectState.lastScanMsg = "ERR: No Block Reader connected!"
+    local found, readError = readProjectClipboard()
+    if not found then
+        ProjectState.lastScanMsg = "ERR: " .. tostring(readError)
         ProjectState.lastScanColor = colors.red
-        return false
-    end
-    local rdr = peripheral.wrap(ProjectState.selectedReader)
-    if not rdr or not rdr.getBlockData then
-        ProjectState.lastScanMsg = "ERR: Cannot wrap " .. tostring(ProjectState.selectedReader)
-        ProjectState.lastScanColor = colors.red
-        return false
-    end
-    local okN, bName = pcall(rdr.getBlockName)
-    if not okN or not bName or bName == "minecraft:air" or bName == "nil" then
-        ProjectState.lastScanMsg = "ERR: Reader faces air! Hang Clipboard on lens."
-        ProjectState.lastScanColor = colors.red
-        return false
-    end
-    local okD, bData = pcall(rdr.getBlockData)
-    if not okD or type(bData) ~= "table" then
-        ProjectState.lastScanMsg = "ERR: Failed to read block data from " .. tostring(bName)
-        ProjectState.lastScanColor = colors.red
-        return false
-    end
-    local pages = extractClipboardPages(bData)
-    if not pages then
-        local shortB = tostring(bName):match(":(.+)$") or tostring(bName)
-        ProjectState.lastScanMsg = "ERR: No checklist found on '" .. shortB .. "'"
-        ProjectState.lastScanColor = colors.orange
         return false
     end
 
     local byId = {}
     local order = {}
-    for _, page in ipairs(pages) do
+    for _, pageIndex in ipairs(getSortedNumericKeys(found.pages)) do
+        local page = found.pages[pageIndex]
         if type(page) == "table" then
-            for _, entry in ipairs(page) do
+            for _, lineIndex in ipairs(getSortedNumericKeys(page)) do
+                local entry = page[lineIndex]
                 if type(entry) == "table" then
-                    local amt = tonumber(entry.item_amount) or 0
-                    local icon = entry.icon
-                    local itemId = type(icon) == "table" and icon.id or nil
-                    if amt > 0 and itemId and itemId ~= "" then
+                    local amount = tonumber(entry.amount) or 0
+                    local itemId = nil
+                    if type(entry.item) == "string" then
+                        itemId = entry.item
+                    elseif type(entry.item) == "table" then
+                        itemId = entry.item.id or entry.item.name
+                    end
+                    local checked = entry.checked == true or entry.checked == 1
+                        or entry.checked == "1" or entry.checked == "true"
+                    local text = type(entry.text) == "string" and entry.text or ""
+
+                    if amount > 0 and itemId and itemId ~= "" then
                         if not byId[itemId] then
-                            byId[itemId] = { id = itemId, need = 0, checked = (entry.checked == 1) }
+                            byId[itemId] = {
+                                id = itemId,
+                                need = 0,
+                                checked = checked,
+                                text = text,
+                            }
                             table.insert(order, itemId)
+                        else
+                            byId[itemId].checked = byId[itemId].checked and checked
+                            if text ~= "" and text ~= byId[itemId].text then
+                                byId[itemId].text = byId[itemId].text .. " | " .. text
+                            end
                         end
-                        byId[itemId].need = byId[itemId].need + amt
+                        byId[itemId].need = byId[itemId].need + amount
                     end
                 end
             end
@@ -13119,6 +13200,8 @@ function scanProjectClipboard()
     end
 
     ProjectState.rawClipboardItems = {}
+    ProjectState.rawClipboardPages = found.pages
+    ProjectState.clipboardSlot = found.slot
     for _, itemId in ipairs(order) do
         table.insert(ProjectState.rawClipboardItems, byId[itemId])
     end
@@ -13198,9 +13281,8 @@ function exportProjectToDest()
     return totalMoved
 end
 
-function drawProjectPickerPopup(w, h, touchZones, readers, dests)
-    local mode = ProjectState.pickerMode
-    if not mode then return end
+function drawProjectPickerPopup(w, h, touchZones, dests)
+    if not ProjectState.pickerMode then return end
 
     for i = #touchZones, 1, -1 do
         local zid = touchZones[i].id or ""
@@ -13209,10 +13291,9 @@ function drawProjectPickerPopup(w, h, touchZones, readers, dests)
         end
     end
 
-    local isRdr = (mode == "READER")
-    local list = isRdr and readers or dests
-    local curSel = isRdr and ProjectState.selectedReader or ProjectState.selectedDest
-    local titleStr = isRdr and " SELECT BLOCK READER " or " SELECT DESTINATION STORAGE "
+    local list = dests
+    local curSel = ProjectState.selectedDest
+    local titleStr = " SELECT DESTINATION STORAGE "
 
     local pW = math.min(w - 6, 62)
     local maxRows = math.max(4, math.min(10, h - 16))
@@ -13237,7 +13318,7 @@ function drawProjectPickerPopup(w, h, touchZones, readers, dests)
 
     local listTop = pY + 2
     if #list == 0 then
-        local emptyMsg = isRdr and "(No Block Readers found in network)" or "(No destination storages found)"
+        local emptyMsg = "(No destination storages found)"
         drawText(pX + math.max(2, math.floor((pW - #emptyMsg) / 2)), listTop + 1, emptyMsg:sub(1, pW - 4), colors.lightGray, colors.gray)
     else
         local sIdx = (ProjectState.pickerPage - 1) * maxRows + 1
@@ -13252,33 +13333,13 @@ function drawProjectPickerPopup(w, h, touchZones, readers, dests)
             end
             local mark = isSel and "(*) " or "( ) "
             local disp = getMachineDisplay(pName)
-            local rightTag = ""
-            local rightCol = colors.lightGray
-            if isRdr then
-                if isClipboardOnReader(pName) then
-                    rightTag = "[CLIPBOARD]"
-                    rightCol = colors.lime
-                else
-                    rightTag = "[EMPTY]"
-                    rightCol = colors.lightGray
-                end
-            else
-                if pName == Config.train_box then
-                    rightTag = "[TRAIN BOX]"
-                    rightCol = colors.yellow
-                else
-                    rightTag = "[STORAGE]"
-                    rightCol = colors.cyan
-                end
-            end
+            local rightTag = pName == Config.train_box and "[TRAIN BOX]" or "[STORAGE]"
+            local rightCol = pName == Config.train_box and colors.yellow or colors.cyan
             local maxDispW = math.max(8, pW - 6 - #mark - #rightTag)
             drawText(pX + 2, rY, mark, isSel and colors.lime or colors.lightGray, rowBg)
             drawText(pX + 2 + #mark, rY, disp:sub(1, maxDispW), isSel and colors.lime or colors.white, rowBg)
-            if #rightTag > 0 then
-                drawText(pX + pW - 2 - #rightTag, rY, rightTag, rightCol, rowBg)
-            end
-            local pickAct = isRdr and "proj_pick_rdr" or "proj_pick_dest"
-            table.insert(touchZones, 1, {id=pickAct, arg=pName, x1=pX+1, x2=pX+pW-2, y=rY})
+            drawText(pX + pW - 2 - #rightTag, rY, rightTag, rightCol, rowBg)
+            table.insert(touchZones, 1, {id="proj_pick_dest", arg=pName, x1=pX+1, x2=pX+pW-2, y=rY})
         end
     end
 
@@ -13304,10 +13365,9 @@ function drawProjectPickerPopup(w, h, touchZones, readers, dests)
 end
 
 function drawProjectTab(w, h, stockInv, touchZones)
-    local readers = getProjectBlockReaders()
     local dests = getProjectDestinations()
 
-    if #readers == 0 then
+    if not Config.project_chest or Config.project_chest == "" then
         ProjectState.pickerMode = nil
         local boxW = math.min(w - 6, 70)
         local boxH = 11
@@ -13321,19 +13381,19 @@ function drawProjectTab(w, h, stockInv, touchZones)
             drawText(boxX + boxW - 1, ry, "|", colors.red, colors.gray)
         end
 
-        local t1 = "[!] BLOCK READER NOT FOUND IN NETWORK"
-        local t2 = "Project Clipboard requires an Advanced Peripherals Block Reader."
-        local t3 = "1. Connect a Block Reader to the wired network or computer."
-        local t4 = "2. Hang your Create Schematicannon Clipboard on its lens."
+        local t1 = "[!] PROJECT CLIPBOARD CHEST NOT ASSIGNED"
+        local t2 = "Project reads a Create Clipboard only from the assigned chest."
+        local t3 = "1. Connect a chest to the wired modem network."
+        local t4 = "2. In NETWORK, mark that chest with [PROJ]."
         drawText(boxX + math.max(2, math.floor((boxW - #t1) / 2)), boxY + 2, t1, colors.red, colors.gray)
         drawText(boxX + math.max(2, math.floor((boxW - #t2) / 2)), boxY + 4, t2:sub(1, boxW - 4), colors.white, colors.gray)
         drawText(boxX + math.max(2, math.floor((boxW - #t3) / 2)), boxY + 6, t3:sub(1, boxW - 4), colors.lightGray, colors.gray)
         drawText(boxX + math.max(2, math.floor((boxW - #t4) / 2)), boxY + 7, t4:sub(1, boxW - 4), colors.lightGray, colors.gray)
 
-        local retryBtn = " [ RETRY DETECTION ] "
-        local retryX = boxX + math.floor((boxW - #retryBtn) / 2)
-        drawText(retryX, boxY + 9, retryBtn, colors.black, colors.lime)
-        table.insert(touchZones, {id="proj_retry_reader", x1=retryX, x2=retryX+#retryBtn-1, y=boxY+9})
+        local networkBtn = " [ OPEN NETWORK ] "
+        local networkX = boxX + math.floor((boxW - #networkBtn) / 2)
+        drawText(networkX, boxY + 9, networkBtn, colors.black, colors.lime)
+        table.insert(touchZones, {id="proj_open_network", x1=networkX, x2=networkX+#networkBtn-1, y=boxY+9})
         return
     end
 
@@ -13366,33 +13426,31 @@ function drawProjectTab(w, h, stockInv, touchZones)
         ProjectState.readyTypes = readyCnt
     end
 
-    local clipOnLens = isClipboardOnReader(ProjectState.selectedReader)
-
     local row1Y = 9
     local scanBtn = " [ SCAN CLIPBOARD ] "
     drawText(2, row1Y, scanBtn, colors.black, colors.lime)
     table.insert(touchZones, {id="proj_scan", x1=2, x2=2+#scanBtn-1, y=row1Y})
 
-    local rdrDisp = getMachineDisplay(ProjectState.selectedReader or "none")
-    if #rdrDisp > 14 then rdrDisp = rdrDisp:sub(1, 14) end
-    local rdrBtn = " [ " .. rdrDisp .. " ] "
+    local srcDisp = getMachineDisplay(Config.project_chest)
+    if #srcDisp > 14 then srcDisp = srcDisp:sub(1, 14) end
+    local srcBtn = " [ " .. srcDisp .. " ] "
     local destDisp = ProjectState.selectedDest and getMachineDisplay(ProjectState.selectedDest) or "none"
     if #destDisp > 14 then destDisp = destDisp:sub(1, 14) end
     local destBtn = " [ " .. destDisp .. " ] "
 
-    local rightBlockW = 5 + #rdrBtn + 2 + 6 + #destBtn
-    local rdrLblX = w - rightBlockW
-    drawText(rdrLblX, row1Y, "RDR: ", colors.gray, colors.black)
-    drawText(rdrLblX + 5, row1Y, rdrBtn, colors.white, colors.gray)
-    table.insert(touchZones, {id="proj_open_rdr_picker", x1=rdrLblX, x2=rdrLblX+5+#rdrBtn-1, y=row1Y})
+    local rightBlockW = 5 + #srcBtn + 2 + 6 + #destBtn
+    local srcLblX = w - rightBlockW
+    local srcColor = peripheral.isPresent(Config.project_chest) and colors.lime or colors.red
+    drawText(srcLblX, row1Y, "SRC: ", colors.gray, colors.black)
+    drawText(srcLblX + 5, row1Y, srcBtn, srcColor, colors.gray)
 
-    local destLblX = rdrLblX + 5 + #rdrBtn + 2
+    local destLblX = srcLblX + 5 + #srcBtn + 2
     drawText(destLblX, row1Y, "DEST: ", colors.gray, colors.black)
     drawText(destLblX + 6, row1Y, destBtn, colors.black, colors.cyan)
     table.insert(touchZones, {id="proj_open_dest_picker", x1=destLblX, x2=w, y=row1Y})
 
     local msgX = 2 + #scanBtn + 1
-    local maxMsgW = math.max(0, rdrLblX - msgX - 2)
+    local maxMsgW = math.max(0, srcLblX - msgX - 2)
     if maxMsgW > 4 and ProjectState.lastScanMsg then
         drawText(msgX, row1Y, ProjectState.lastScanMsg:sub(1, maxMsgW), ProjectState.lastScanColor or colors.lightGray, colors.black)
     end
@@ -13428,7 +13486,7 @@ function drawProjectTab(w, h, stockInv, touchZones)
     end
     ax = ax + #expBtn + 2
 
-    if ProjectState.hasScanned and not clipOnLens then
+    if ProjectState.hasScanned then
         local clrX = math.max(ax, w - #clrBtn)
         drawText(clrX, actY, clrBtn, colors.white, colors.red)
         table.insert(touchZones, {id="proj_clear", x1=clrX, x2=clrX+#clrBtn-1, y=actY})
@@ -13522,7 +13580,7 @@ function drawProjectTab(w, h, stockInv, touchZones)
     if ProjectState.page < 1 then ProjectState.page = 1 end
 
     if not ProjectState.hasScanned then
-        local msg = "No clipboard scanned yet. Hang Clipboard on Block Reader and tap [SCAN CLIPBOARD]."
+        local msg = "No clipboard scanned yet. Put a Create Clipboard in the assigned chest and tap [SCAN CLIPBOARD]."
         drawText(math.max(2, math.floor((w - #msg) / 2)), listStartY + 3, msg:sub(1, w - 4), colors.lightGray, colors.black)
     elseif #activeList == 0 then
         local emptyMsg = "No items in this view."
@@ -13544,8 +13602,9 @@ function drawProjectTab(w, h, stockInv, touchZones)
             local it = activeList[idx]
             if st == "CHECKLIST" then
                 local maxNameW = math.max(10, colNeed - 4)
-                local dispName = it.name:sub(1, maxNameW)
-                local nameCol = (it.deficit == 0) and colors.lime or colors.white
+                local checkPrefix = it.checked and "[x] " or "[ ] "
+                local dispName = (checkPrefix .. it.name):sub(1, maxNameW)
+                local nameCol = (it.deficit == 0 or it.checked) and colors.lime or colors.white
                 drawText(2, rowY, dispName, nameCol, rowBg)
                 drawText(colNeed, rowY, string.format("%4d", it.need), colors.white, rowBg)
                 drawText(colStock, rowY, string.format("%5d", it.stock), colors.cyan, rowBg)
@@ -13596,20 +13655,14 @@ function drawProjectTab(w, h, stockInv, touchZones)
     end
 
     if ProjectState.pickerMode then
-        drawProjectPickerPopup(w, h, touchZones, readers, dests)
+        drawProjectPickerPopup(w, h, touchZones, dests)
     end
 end
 
 function handleProjectTouchZone(zone)
-    if zone.id == "proj_retry_reader" then
-        local rdrs = getProjectBlockReaders()
-        if #rdrs > 0 then
-            ProjectState.lastScanMsg = "Reader connected: " .. tostring(ProjectState.selectedReader)
-            ProjectState.lastScanColor = colors.lime
-        end
-    elseif zone.id == "proj_open_rdr_picker" then
-        ProjectState.pickerMode = "READER"
-        ProjectState.pickerPage = 1
+    if zone.id == "proj_open_network" then
+        currentTab = "NETWORK"
+        currentPage = 1
     elseif zone.id == "proj_open_dest_picker" then
         ProjectState.pickerMode = "DEST"
         ProjectState.pickerPage = 1
@@ -13619,13 +13672,6 @@ function handleProjectTouchZone(zone)
         ProjectState.pickerPage = math.max(1, ProjectState.pickerPage - 1)
     elseif zone.id == "proj_picker_next" then
         ProjectState.pickerPage = ProjectState.pickerPage + 1
-    elseif zone.id == "proj_pick_rdr" then
-        ProjectState.selectedReader = zone.arg
-        Config.project_reader = zone.arg
-        saveData()
-        ProjectState.pickerMode = nil
-        ProjectState.lastScanMsg = "Selected reader: " .. getMachineDisplay(zone.arg)
-        ProjectState.lastScanColor = colors.cyan
     elseif zone.id == "proj_pick_dest" then
         ProjectState.selectedDest = zone.arg
         Config.project_dest = zone.arg
@@ -13634,17 +13680,7 @@ function handleProjectTouchZone(zone)
         ProjectState.lastScanMsg = "Destination: " .. getMachineDisplay(zone.arg)
         ProjectState.lastScanColor = colors.cyan
     elseif zone.id == "proj_clear" then
-        ProjectState.hasScanned = false
-        ProjectState.rawClipboardItems = {}
-        ProjectState.items = {}
-        ProjectState.missingRecipes = {}
-        ProjectState.rawDeficits = {}
-        ProjectState.totalTypes = 0
-        ProjectState.totalPieces = 0
-        ProjectState.readyTypes = 0
-        ProjectState.page = 1
-        ProjectState.lastScanMsg = "Project cleared. Hang Clipboard on Block Reader and tap [SCAN CLIPBOARD]."
-        ProjectState.lastScanColor = colors.lightGray
+        clearProjectData()
     elseif zone.id == "proj_scan" then
         scanProjectClipboard()
     elseif zone.id == "proj_subtab" then
@@ -13934,14 +13970,14 @@ drawInterface = function()
                     end
                 end
 
-                local pW3 = math.min(w - 10, 70)
-                local pX3 = math.floor((w - pW3) / 2) + 1
+                local pW3 = math.min(w - 6, 70)
                 local pH3 = math.min(h - 4, 18)
+                local pX3 = math.floor((w - pW3) / 2) + 1
                 local pY3 = math.floor((h - pH3) / 2) + 1
                 local cols3 = 3
                 local colW3 = math.floor((pW3 - 2) / cols3)
-                local listTop3 = pY3 + 3
-                local maxRows3 = pH3 - 6
+                local listTop3 = pY3 + 2
+                local maxRows3 = pH3 - 5
                 local perPage3 = cols3 * maxRows3
                 local iPage2  = mgmtPopup.itemPage or 1
                 local iTotal2 = math.max(1, math.ceil(#filteredItems / perPage3))
@@ -13952,6 +13988,7 @@ drawInterface = function()
                 popupZoneStart = #touchZones + 1
                 popupRect = {x1=pX3, x2=pX3+pW3-1, y1=pY3, y2=pY3+pH3-1}
                 _bufFillRect(pX3, pY3, pW3, pH3, colors.gray)
+                _bufFillRect(pX3, pY3, pW3, 1, colors.lime)
 
                 local inpShort2 = inIsStg3 and "STORAGE" or getMachineDisplay(mgmtPopup.input)
                 local hdr3
@@ -13964,22 +14001,6 @@ drawInterface = function()
                 end
                 drawText(pX3 + math.floor((pW3 - #hdr3) / 2), pY3, hdr3, colors.black, colors.lime)
 
-                local searchRow  = pY3 + 1
-                local srchDisp3  = (mgmtItemSearch == "") and "<type item name...>" or mgmtItemSearch
-                local srchColor3 = mgmtItemSearchActive and colors.black or (mgmtItemSearch == "" and colors.gray or colors.white)
-                local srchBoxBg3 = mgmtItemSearchActive and colors.white or colors.lightGray
-                local srchFull3  = "FIND: [ " .. srchDisp3 .. " ]"
-                local srchX3     = pX3 + math.floor((pW3 - #srchFull3) / 2)
-                drawText(srchX3, searchRow, "FIND: ", colors.lightGray, colors.gray)
-                drawText(srchX3 + 6, searchRow, "[ " .. srchDisp3 .. " ]", srchColor3, srchBoxBg3)
-                table.insert(touchZones, {id="mgmt_search_focus", x1=srchX3, x2=srchX3+#srchFull3-1, y=searchRow})
-                if mgmtItemSearch ~= "" then
-                    local xBtn  = " [X] "
-                    local xBtnX = srchX3 + #srchFull3 + 1
-                    drawText(xBtnX, searchRow, xBtn, colors.white, colors.red)
-                    table.insert(touchZones, {id="mgmt_search_clear", x1=xBtnX, x2=xBtnX+#xBtn-1, y=searchRow})
-                end
-
                 for ci = 1, cols3 - 1 do
                     local sepX = pX3 + 1 + ci * colW3
                     for ry = 0, maxRows3 - 1 do
@@ -13988,8 +14009,8 @@ drawInterface = function()
                 end
 
                 if #filteredItems == 0 then
-                    local emptyMsg = srch3 ~= "" and "(no matches)" or "(input empty or unavailable)"
-                    drawText(pX3 + 2, listTop3 + 1, emptyMsg, colors.lightGray, colors.gray)
+                    local emptyMsg = (srch3 ~= "") and "(no matches)" or "(input empty or unavailable)"
+                    drawText(pX3 + math.floor((pW3 - #emptyMsg) / 2), pY3 + math.floor(pH3 / 2), emptyMsg, colors.lightGray, colors.gray)
                 else
                     for ii2 = iStart2, iEnd2 do
                         local localIdx = ii2 - iStart2
@@ -13999,7 +14020,7 @@ drawInterface = function()
                         local cellY = listTop3 + row
                         local itm2 = filteredItems[ii2]
                         local cntS2 = tostring(itm2.count)
-                        local nameMax = colW3 - 2 - #cntS2 - 1
+                        local nameMax = colW3 - #cntS2 - 3
                         local iShort2 = getItemDisplayName(itm2.name)
                         if #iShort2 > nameMax then iShort2 = iShort2:sub(1, nameMax) end
                         local hasRule2 = false
@@ -14010,28 +14031,54 @@ drawInterface = function()
                         end
                         local nameColor = hasRule2 and colors.orange or colors.white
                         drawText(cellX, cellY, iShort2, nameColor, colors.gray)
-                        drawText(cellX + colW3 - 2 - #cntS2, cellY, cntS2, colors.cyan, colors.gray)
+                        drawText(cellX + colW3 - #cntS2 - 2, cellY, cntS2, colors.yellow, colors.gray)
                         if not hasRule2 then
                             table.insert(touchZones, {id="mgmt_add_rule", arg=itm2.name, x1=cellX, x2=cellX+colW3-2, y=cellY})
                         end
                     end
                 end
 
-                local navY3 = pY3 + pH3 - 2
-                local arrL3 = " < "; local arrR3 = " > "
-                local lAct3 = (iPage2 > 1)
-                local rAct3 = (iPage2 < iTotal2)
-                drawText(pX3 + 2, navY3, arrL3, lAct3 and colors.white or colors.lightGray, colors.gray)
-                if lAct3 then
+                drawText(pX3 + 1, pY3 + pH3 - 2, string.rep("-", pW3 - 2), colors.lightGray, colors.gray)
+                local navY3 = pY3 + pH3 - 1
+
+                local arrL3 = " [ < ] "; local arrR3 = " [ > ] "
+                drawText(pX3 + 2, navY3, arrL3, iPage2 > 1 and colors.white or colors.lightGray, colors.gray)
+                if iPage2 > 1 then
                     table.insert(touchZones, {id="mgmt_item_prev", x1=pX3+2, x2=pX3+2+#arrL3-1, y=navY3})
                 end
-                drawText(pX3 + pW3 - #arrR3 - 2, navY3, arrR3, rAct3 and colors.white or colors.lightGray, colors.gray)
-                if rAct3 then
-                    table.insert(touchZones, {id="mgmt_item_next", x1=pX3+pW3-#arrR3-2, x2=pX3+pW3-3, y=navY3})
+                local pgInfo3 = string.format(" %d/%d ", iPage2, iTotal2)
+                drawText(pX3 + 2 + #arrL3, navY3, pgInfo3, colors.yellow, colors.gray)
+                local rx3 = pX3 + 2 + #arrL3 + #pgInfo3
+                drawText(rx3, navY3, arrR3, iPage2 < iTotal2 and colors.white or colors.lightGray, colors.gray)
+                if iPage2 < iTotal2 then
+                    table.insert(touchZones, {id="mgmt_item_next", x1=rx3, x2=rx3+#arrR3-1, y=navY3})
                 end
-                local canS3 = " [CANCEL] "
-                drawText(pX3 + math.floor((pW3 - #canS3) / 2), pY3 + pH3 - 1, canS3, colors.white, colors.gray)
-                table.insert(touchZones, {id="mgmt_item_cancel", x1=pX3+math.floor((pW3 - #canS3)/2), x2=pX3+math.floor((pW3 - #canS3)/2)+#canS3-1, y=pY3+pH3-1})
+                local navEnd3 = rx3 + #arrR3
+
+                local cBtn3 = " [ CANCEL ] "
+                local cBtnX3 = pX3 + pW3 - #cBtn3 - 2
+                drawText(cBtnX3, navY3, cBtn3, colors.white, colors.red)
+                table.insert(touchZones, {id="mgmt_item_cancel", x1=cBtnX3, x2=cBtnX3+#cBtn3-1, y=navY3})
+
+                local srchCur3 = mgmtItemSearch or ""
+                local hasClr3 = (srchCur3 ~= "")
+                local availW3 = (cBtnX3 - 1) - (navEnd3 + 1)
+                local maxBoxW3 = math.max(6, availW3 - 10 - (hasClr3 and 4 or 0))
+                local srchDisp3 = (srchCur3 == "") and "<type name...>" or srchCur3
+                if #srchDisp3 > maxBoxW3 then srchDisp3 = srchDisp3:sub(1, maxBoxW3) end
+                local srchBox3 = "[ " .. srchDisp3 .. " ]"
+                local srchFullW3 = 6 + #srchBox3 + (hasClr3 and 4 or 0)
+                local srchX3 = navEnd3 + math.max(1, math.floor((availW3 - srchFullW3) / 2))
+                local sFg3 = mgmtItemSearchActive and colors.black or (srchCur3 == "" and colors.gray or colors.white)
+                local sBg3 = mgmtItemSearchActive and colors.white or colors.lightGray
+                drawText(srchX3, navY3, "FIND: ", colors.lightGray, colors.gray)
+                drawText(srchX3 + 6, navY3, srchBox3, sFg3, sBg3)
+                table.insert(touchZones, {id="mgmt_search_focus", x1=srchX3, x2=srchX3+6+#srchBox3-1, y=navY3})
+                if hasClr3 then
+                    local clrBtn3 = " [X]"
+                    drawText(srchX3 + 6 + #srchBox3, navY3, clrBtn3, colors.white, colors.red)
+                    table.insert(touchZones, {id="mgmt_search_clear", x1=srchX3+6+#srchBox3, x2=srchX3+6+#srchBox3+#clrBtn3-1, y=navY3})
+                end
             elseif step == "output_select" then
                 popupRect, popupZoneStart = _diB19(w, h, touchZones, popupRect, popupZoneStart)
             end
@@ -14624,6 +14671,18 @@ elseif zone.id == "set_train_box" then
     else
         StorageIndex.clearRoles(p)
         Config.train_box = p
+    end
+    invalidateStockCache()
+    saveData()
+elseif zone.id == "set_project_chest" then
+    local p = zone.arg
+    if Config.project_chest == p then
+        Config.project_chest = nil
+        clearProjectData("Project chest unassigned. Select another chest with [PROJ] in NETWORK.")
+    else
+        StorageIndex.clearRoles(p)
+        Config.project_chest = p
+        clearProjectData("Project chest assigned. Put a Create Clipboard inside and scan it.")
     end
     invalidateStockCache()
     saveData()
@@ -16206,6 +16265,24 @@ elseif zone.id == "comp_popup_prev" then
 if compositePopup then compositePopup.page = math.max(1, (compositePopup.page or 1) - 1) end
 elseif zone.id == "comp_popup_next" then
 if compositePopup then compositePopup.page = (compositePopup.page or 1) + 1 end
+elseif zone.id == "comp_search_focus" then
+if compositePopup then
+compositePopup.searchActive = true
+drawInterface()
+term.clear() term.setCursorPos(1, 1)
+write("Search item: ")
+local srInput = timedRead(5)
+compositePopup.searchActive = false
+if srInput ~= nil then
+compositePopup.search = srInput
+end
+compositePopup.page = 1
+end
+elseif zone.id == "comp_search_clear" then
+if compositePopup then
+compositePopup.search = ""
+compositePopup.page = 1
+end
 elseif zone.id == "comp_select_device" then
 if compositePopup then
 if compositePopup.target == "target" then
