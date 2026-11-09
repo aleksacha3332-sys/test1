@@ -20,6 +20,7 @@ local Recipes = {}
 local Config = {
     storages = {},
     main_vaults = {},
+    input_chests = {},
     buffer = nil,
     fluid_tanks = {},
     train_box = nil,
@@ -954,7 +955,7 @@ end
 function initDataFiles()
 local defaults = {
 { RECIPES_FILE,        "{}"  },
-{ CONFIG_FILE,          textutils.serializeJSON({storages={}, main_vaults={}, buffer=nil, turtles={}, autostock_paused=false}) },
+{ CONFIG_FILE,          textutils.serializeJSON({storages={}, main_vaults={}, input_chests={}, buffer=nil, turtles={}, autostock_paused=false}) },
 { AUTOSTOCK_FILE,      "{}"  },
 { GROUPS_FILE,         "{}"  },
 { ALT_RECIPES_FILE,    "{}"  },
@@ -990,6 +991,7 @@ Config = loadDataFile(CONFIG_FILE) or {storages={}, train_box=nil, turtles={}, a
 end
 if not Config.main_vaults then Config.main_vaults = {} end
 if not Config.storages then Config.storages = {} end
+if not Config.input_chests then Config.input_chests = {} end
 if not Config.fluid_tanks then Config.fluid_tanks = {} end
 if not Config.turtles then Config.turtles = {} end
 if Config.turtle and Config.turtle ~= "" then
@@ -1161,6 +1163,7 @@ if g.provider and not g.paused then
 for _, src in ipairs(mgmtIOList(g, true)) do
 if src and src ~= "" and src ~= "STORAGE"
 and not Config.storages[src]
+and not (Config.input_chests and Config.input_chests[src])
 and not (Config.fluid_tanks and Config.fluid_tanks[src])
 and not seen[src] then
 seen[src] = true
@@ -1423,9 +1426,10 @@ function StorageIndex.getTargetSlotFor(targetVault, itemName, maxStack)
     return nil, 0
 end
 
-local function _ingestBufferInner()
-    if not Config.buffer or Config.buffer == "" then return 0 end
-    local buf = peripheral.wrap(Config.buffer)
+local function _ingestBufferInner(sourceName)
+    sourceName = sourceName or Config.buffer
+    if not sourceName or sourceName == "" then return 0 end
+    local buf = peripheral.wrap(sourceName)
     if not (buf and buf.list and buf.pushItems) then return 0 end
 
     local okL, bList = pcall(buf.list)
@@ -1445,7 +1449,7 @@ local function _ingestBufferInner()
         if item and item.name and item.count and item.count > 0 then
             local itemKey = makeItemKey(item.name, item.nbt)
             if item.nbt and item.nbt ~= "" and not isValidDisplayName(ItemDisplayNames[itemKey]) then
-                resolveItemDisplayName(Config.buffer, slot, itemKey)
+                resolveItemDisplayName(sourceName, slot, itemKey)
             end
             local target = StorageIndex.itemHomes[itemKey]
 
@@ -1539,7 +1543,8 @@ local function _ingestBufferInner()
     return itemsMoved
 end
 
-function StorageIndex.ingestBuffer()
+local function _ingestWithLock(sourceName)
+    if not sourceName or sourceName == "" then return 0 end
     local waitTicks = 0
     while StorageIndex._ingestBusy and waitTicks < 40 do
         waitTicks = waitTicks + 1
@@ -1547,10 +1552,29 @@ function StorageIndex.ingestBuffer()
     end
     if StorageIndex._ingestBusy then return 0 end
     StorageIndex._ingestBusy = true
-    local okIng, resIng = pcall(_ingestBufferInner)
+    local okIng, resIng = pcall(_ingestBufferInner, sourceName)
     StorageIndex._ingestBusy = false
     if okIng then return resIng or 0 end
     return 0
+end
+
+function StorageIndex.ingestBuffer()
+    return _ingestWithLock(Config.buffer)
+end
+
+function StorageIndex.ingestInputChests()
+    local totalMoved = 0
+    local names = {}
+    for sourceName, enabled in pairs(Config.input_chests or {}) do
+        if enabled and not SYSTEM_SIDES[sourceName] then
+            names[#names + 1] = sourceName
+        end
+    end
+    table.sort(names)
+    for _, sourceName in ipairs(names) do
+        totalMoved = totalMoved + _ingestWithLock(sourceName)
+    end
+    return totalMoved
 end
 
 function StorageIndex.reconcileNext()
@@ -1695,6 +1719,7 @@ function StorageIndex.clearRoles(p)
         StorageIndex.vaultStats[p] = nil
     end
     if Config.storages then Config.storages[p] = nil end
+    if Config.input_chests then Config.input_chests[p] = nil end
     if Config.train_box == p then Config.train_box = nil end
     if Config.project_chest == p then Config.project_chest = nil end
     if Config.turtles then Config.turtles[p] = nil end
@@ -3031,6 +3056,7 @@ function getAvailableMachines()
         if not SYSTEM_SIDES[p] and p ~= MONITOR_SIDE and p ~= Config.train_box
         and not (Config.turtles and Config.turtles[p]) 
         and not (Config.storages and Config.storages[p])
+        and not (Config.input_chests and Config.input_chests[p])
         and not (Config.main_vaults and Config.main_vaults[p]) -- <--- Exclude MAIN
         and p ~= Config.buffer                                -- <--- Exclude BUF
         and not (Config.fluid_tanks and Config.fluid_tanks[p])
@@ -11462,6 +11488,7 @@ function _diB13(w, h, touchZones)
         if Config.project_chest == p then return true end
         if Config.main_vaults and Config.main_vaults[p] then return true end
         if Config.storages and Config.storages[p] then return true end
+        if Config.input_chests and Config.input_chests[p] then return true end
         if Config.turtles and Config.turtles[p] then return true end
         if Config.fluid_tanks and Config.fluid_tanks[p] then return true end
         if MachineLabels and MachineLabels[p] and MachineLabels[p] ~= "" then return true end
@@ -11493,7 +11520,7 @@ function _diB13(w, h, touchZones)
         drawText(math.max(2, math.floor((w - #emptyMsg) / 2) + 1), startRowY + 2, emptyMsg, colors.yellow, colors.black)
     end
 
-    local btnX = math.max(2, w - 65)
+    local btnX = math.max(2, w - 61)
     local nameWidth = math.max(1, btnX - 3)
     local function fitNetworkName(name)
         if #name <= nameWidth then return name end
@@ -11515,47 +11542,54 @@ function _diB13(w, h, touchZones)
 
         -- 1. [BUF] (Dump buffer)
         local isBuf = (Config.buffer == p)
-        drawText(btnX, rowY, " [BUF] ", isBuf and colors.black or inactiveFg, isBuf and colors.magenta or rowBg)
-        table.insert(touchZones, {id="toggle_buffer", arg=p, x1=btnX, x2=btnX+6, y=rowY})
+        drawText(btnX, rowY, "[BUF] ", isBuf and colors.black or inactiveFg, isBuf and colors.magenta or rowBg)
+        table.insert(touchZones, {id="toggle_buffer", arg=p, x1=btnX, x2=btnX+5, y=rowY})
 
         -- 2. [MAIN] (Main vault array 2..9)
         local isMain = Config.main_vaults and Config.main_vaults[p]
-        drawText(btnX + 7, rowY, " [MAIN] ", isMain and colors.black or inactiveFg, isMain and colors.lightBlue or rowBg)
-        table.insert(touchZones, {id="toggle_main_vault", arg=p, x1=btnX+7, x2=btnX+14, y=rowY})
+        drawText(btnX + 6, rowY, "[MAIN] ", isMain and colors.black or inactiveFg, isMain and colors.lightBlue or rowBg)
+        table.insert(touchZones, {id="toggle_main_vault", arg=p, x1=btnX+6, x2=btnX+12, y=rowY})
 
         -- 3. [VAULT] (Auxiliary storage)
         local isStorage = Config.storages and Config.storages[p]
-        drawText(btnX + 15, rowY, " [VAULT] ", isStorage and colors.black or inactiveFg, isStorage and colors.lime or rowBg)
-        table.insert(touchZones, {id="toggle_storage", arg=p, x1=btnX+15, x2=btnX+23, y=rowY})
+        drawText(btnX + 13, rowY, "[VAULT] ", isStorage and colors.black or inactiveFg, isStorage and colors.lime or rowBg)
+        table.insert(touchZones, {id="toggle_storage", arg=p, x1=btnX+13, x2=btnX+20, y=rowY})
 
         -- 4. [T.BOX] (Train Box)
         local isTBox = (Config.train_box == p)
-        drawText(btnX + 24, rowY, " [T.BOX] ", isTBox and colors.black or inactiveFg, isTBox and colors.orange or rowBg)
-        table.insert(touchZones, {id="set_train_box", arg=p, x1=btnX+24, x2=btnX+32, y=rowY})
+        drawText(btnX + 21, rowY, "[T.BOX] ", isTBox and colors.black or inactiveFg, isTBox and colors.orange or rowBg)
+        table.insert(touchZones, {id="set_train_box", arg=p, x1=btnX+21, x2=btnX+28, y=rowY})
 
         -- 5. [TURTLE]
         local isTurtle = Config.turtles and Config.turtles[p]
-        drawText(btnX + 33, rowY, " [TURTLE] ", isTurtle and colors.black or inactiveFg, isTurtle and colors.cyan or rowBg)
-        table.insert(touchZones, {id="set_turtle", arg=p, x1=btnX+33, x2=btnX+42, y=rowY})
+        drawText(btnX + 29, rowY, "[TURTLE] ", isTurtle and colors.black or inactiveFg, isTurtle and colors.cyan or rowBg)
+        table.insert(touchZones, {id="set_turtle", arg=p, x1=btnX+29, x2=btnX+37, y=rowY})
 
         -- 6. [SUF] (Suffix / Name)
         local hasLabel = MachineLabels[p] and MachineLabels[p] ~= ""
-        drawText(btnX + 43, rowY, " [SUF] ", hasLabel and colors.black or inactiveFg, hasLabel and colors.lime or rowBg)
-        table.insert(touchZones, {id="machine_label", arg=p, x1=btnX+43, x2=btnX+49, y=rowY})
+        drawText(btnX + 38, rowY, "[SUF] ", hasLabel and colors.black or inactiveFg, hasLabel and colors.lime or rowBg)
+        table.insert(touchZones, {id="machine_label", arg=p, x1=btnX+38, x2=btnX+43, y=rowY})
 
         -- 7. [TNK] (Fluid tank)
         local isFluidTank = Config.fluid_tanks and Config.fluid_tanks[p]
         local tankObj = peripheral.wrap(p)
         if tankObj and tankObj.tanks ~= nil then
-            drawText(btnX + 50, rowY, " [TNK] ", isFluidTank and colors.black or inactiveFg, isFluidTank and colors.lime or rowBg)
-            table.insert(touchZones, {id="toggle_fluid_tank", arg=p, x1=btnX+50, x2=btnX+56, y=rowY})
+            drawText(btnX + 44, rowY, "[TNK] ", isFluidTank and colors.black or inactiveFg, isFluidTank and colors.lime or rowBg)
+            table.insert(touchZones, {id="toggle_fluid_tank", arg=p, x1=btnX+44, x2=btnX+49, y=rowY})
         end
 
         -- 8. [PROJ] (Dedicated Create Clipboard chest)
         local isProjectChest = (Config.project_chest == p)
         if tankObj and tankObj.list and tankObj.getItemDetail then
-            drawText(btnX + 57, rowY, " [PROJ] ", isProjectChest and colors.black or inactiveFg, isProjectChest and colors.yellow or rowBg)
-            table.insert(touchZones, {id="set_project_chest", arg=p, x1=btnX+57, x2=btnX+64, y=rowY})
+            drawText(btnX + 50, rowY, "[PROJ] ", isProjectChest and colors.black or inactiveFg, isProjectChest and colors.yellow or rowBg)
+            table.insert(touchZones, {id="set_project_chest", arg=p, x1=btnX+50, x2=btnX+56, y=rowY})
+        end
+
+        -- 9. [IN] (Automatically empty this inventory into MAIN)
+        local isInputChest = Config.input_chests and Config.input_chests[p]
+        if (tankObj and tankObj.list and tankObj.pushItems) or isInputChest then
+            drawText(btnX + 57, rowY, "[IN]", isInputChest and colors.black or inactiveFg, isInputChest and colors.orange or rowBg)
+            table.insert(touchZones, {id="toggle_input_chest", arg=p, x1=btnX+57, x2=btnX+60, y=rowY})
         end
 
         rowY = rowY + 1
@@ -13017,6 +13051,7 @@ function getProjectDestinations()
     for _, name in ipairs(peripheral.getNames()) do
         if not seen[name] and name ~= Config.buffer and name ~= Config.project_chest
         and not (Config.main_vaults and Config.main_vaults[name])
+        and not (Config.input_chests and Config.input_chests[name])
         and not (Config.turtles and Config.turtles[name])
         and not SYSTEM_SIDES[name] then
             if peripheral.hasType and peripheral.hasType(name, "inventory") then
@@ -14683,6 +14718,17 @@ elseif zone.id == "toggle_storage" then
     else
         StorageIndex.clearRoles(p)
         Config.storages[p] = true
+    end
+    invalidateStockCache()
+    saveData()
+elseif zone.id == "toggle_input_chest" then
+    local p = zone.arg
+    if not Config.input_chests then Config.input_chests = {} end
+    if Config.input_chests[p] then
+        Config.input_chests[p] = nil
+    else
+        StorageIndex.clearRoles(p)
+        Config.input_chests[p] = true
     end
     invalidateStockCache()
     saveData()
@@ -16926,12 +16972,13 @@ function runMain()
             end
         end,
         mainLoop,
-        -- Background buffer flush
+        -- Background buffer and input chest flush
         function()
             while true do
                 sleep(1.5)
                 if not StorageIndex._ingestBusy and not StorageIndex.isDefragging then
                     pcall(StorageIndex.ingestBuffer)
+                    pcall(StorageIndex.ingestInputChests)
                 end
             end
         end,
