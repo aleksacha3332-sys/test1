@@ -3813,8 +3813,777 @@ _fbLast[y] = {ts, fs, bs}
 end
 end
 end
+-- Convert UTF-8 Russian text to the custom ComputerCraft font encoding.
+local function ruChar(cp)
+  if cp >= 0x410 and cp <= 0x415 then return string.char(191 + cp - 0x410)
+  elseif cp == 0x401 then return string.char(197)
+  elseif cp >= 0x416 and cp <= 0x42F then return string.char(198 + cp - 0x416)
+  elseif cp >= 0x430 and cp <= 0x435 then return string.char(224 + cp - 0x430)
+  elseif cp == 0x451 then return string.char(230)
+  elseif cp >= 0x436 and cp <= 0x44E then return string.char(231 + cp - 0x436)
+  elseif cp == 0x44F then return string.char(13)
+  elseif cp == 0x2014 or cp == 0x2013 then return "-"
+  elseif cp == 0x2026 then return "..."
+  elseif cp == 0x2192 then return "->"
+  elseif cp == 0xB7 then return "-"
+  elseif cp == 0x2116 then return "N"
+  elseif cp == 0xAB or cp == 0xBB then return '"'
+  end
+  return "?"
+end
+local function range(a, b) return "[" .. string.char(a) .. "-" .. string.char(b) .. "]" end
+local UTF3 = range(224, 239) .. range(128, 191) .. range(128, 191)
+local UTF2 = range(192, 223) .. range(128, 191)
+-- All visible UTF-8 text passes through T exactly once.
+local function T(s)
+  s = tostring(s)
+  s = s:gsub(UTF3, function(c)
+    local a, b, d = c:byte(1, 3)
+    return ruChar((a - 224) * 4096 + (b - 128) * 64 + (d - 128))
+  end)
+  return (s:gsub(UTF2, function(c)
+    local a, b = c:byte(1, 2)
+    return ruChar((a - 192) * 64 + (b - 128))
+  end))
+end
+-- Russian interface localization; internal identifiers remain unchanged.
+local UI_TRANSLATIONS = {
+    ["  -> +ALT"] = "  -> +АЛЬТ.",
+    ["  -> NEW"] = "  -> НОВЫЙ",
+    ["  DUB"] = "  ДУБЛЬ",
+    ["  Max: "] = "  Макс.: ",
+    ["  RULE"] = "  ПРАВИЛО",
+    [" %s[%s]  %d machines"] = " %s[%s]  %d механизмов",
+    [" (tap [RESULTS] to edit outputs)"] = " (нажмите [РЕЗУЛЬТАТЫ] для изменения выходов)",
+    [" -> Out: "] = " -> Выход: ",
+    [" < PREV "] = " < НАЗАД ",
+    [" > _  (type to search)"] = " > _  (введите запрос)",
+    [" ADD FLUID FROM: "] = " ДОБАВИТЬ ЖИДКОСТЬ ИЗ: ",
+    [" ADD ITEM FROM: "] = " ДОБАВИТЬ ПРЕДМЕТ ИЗ: ",
+    [" ADD SECONDARY ACTION "] = " ДОБАВИТЬ ДОПОЛНИТЕЛЬНОЕ ДЕЙСТВИЕ ",
+    [" ALL "] = " ВСЕ ",
+    [" ANALYSIS: "] = " АНАЛИЗ: ",
+    [" CHECKLIST (%d) "] = " СПИСОК (%d) ",
+    [" COMPOSITE BATCH DISCOVERY TEST "] = " ПАКЕТНЫЙ ТЕСТ СОСТАВНОГО РЕЦЕПТА ",
+    [" COMPOSITE RECIPE TEST "] = " ТЕСТ СОСТАВНОГО РЕЦЕПТА ",
+    [" CRAFT COMPLETE "] = " КРАФТ ЗАВЕРШЁН ",
+    [" CRAFT HISTORY "] = " ИСТОРИЯ КРАФТОВ ",
+    [" CRAFT QUEUE ("] = " ОЧЕРЕДЬ КРАФТА (",
+    [" CRAFT RESULTS & BYPRODUCTS "] = " РЕЗУЛЬТАТЫ И ПОБОЧНЫЕ ПРОДУКТЫ ",
+    [" CRAFT RESULTS & BYPRODUCTS (CHANCE MODE) "] = " РЕЗУЛЬТАТЫ И ПОБОЧНЫЕ ПРОДУКТЫ (РЕЖИМ ШАНСА) ",
+    [" EDIT CUSTOM GROUP "] = " ИЗМЕНИТЬ ГРУППУ ",
+    [" EDIT GROUP "] = " ИЗМЕНИТЬ ГРУППУ ",
+    [" EDIT QUEUE AMOUNT "] = " ИЗМЕНИТЬ КОЛИЧЕСТВО В ОЧЕРЕДИ ",
+    [" EDIT RECIPE: "] = " ИЗМЕНЕНИЕ РЕЦЕПТА: ",
+    [" ENTER QUANTITY "] = " ВВОД КОЛИЧЕСТВА ",
+    [" FLUID "] = " ЖИДКОСТЬ ",
+    [" FLUID PRODUCTION ORDER "] = " ЗАКАЗ НА ПРОИЗВОДСТВО ЖИДКОСТИ ",
+    [" HISTORY "] = " ИСТОРИЯ ",
+    [" INPUT"] = " ВХОД",
+    [" ITEM "] = " ПРЕДМЕТ ",
+    [" ITEM  "] = " ПРЕДМЕТ ",
+    [" Input:  "] = " Вход:  ",
+    [" KEEP: THRESHOLD -> TARGET "] = " ЗАПАС: ПОРОГ -> ЦЕЛЬ ",
+    [" MACHINE NOT FOUND "] = " МЕХАНИЗМ НЕ НАЙДЕН ",
+    [" MANUFACTURING ACTIVE "] = " ПРОИЗВОДСТВО АКТИВНО ",
+    [" MISSING: "] = " НЕ ХВАТАЕТ: ",
+    [" NETWORK DEVICE FILTER "] = " ФИЛЬТР СЕТЕВЫХ УСТРОЙСТВ ",
+    [" NEW CUSTOM GROUP "] = " НОВАЯ ГРУППА ",
+    [" NEW GROUP "] = " НОВАЯ ГРУППА ",
+    [" NEXT > "] = " ВПЕРЁД > ",
+    [" NO RECIPE (%d) "] = " НЕТ РЕЦЕПТА (%d) ",
+    [" Name: [ "] = " Имя: [ ",
+    [" OF "] = " ИЗ ",
+    [" OPERATION "] = " ОПЕРАЦИЯ ",
+    [" OPTIMIZE "] = " ОПТИМИЗИРОВАТЬ ",
+    [" Output: "] = " Выход: ",
+    [" PAGE "] = " СТРАНИЦА ",
+    [" PAGE %d OF %d "] = " СТРАНИЦА %d ИЗ %d ",
+    [" PICK CONDITION FLUID "] = " ВЫБОР ЖИДКОСТИ ДЛЯ УСЛОВИЯ ",
+    [" PICK CONDITION ITEM "] = " ВЫБОР ПРЕДМЕТА ДЛЯ УСЛОВИЯ ",
+    [" PRODUCTION INTERACTIVE ORDER "] = " ИНТЕРАКТИВНЫЙ ЗАКАЗ НА ПРОИЗВОДСТВО ",
+    [" QUEUE "] = " ОЧЕРЕДЬ ",
+    [" RAW DEFICIT (%d) "] = " ДЕФИЦИТ СЫРЬЯ (%d) ",
+    [" RECIPE INTERACTIVE LEARNING "] = " ИНТЕРАКТИВНОЕ ИЗУЧЕНИЕ РЕЦЕПТА ",
+    [" RECIPE LEARNED "] = " РЕЦЕПТ ИЗУЧЕН ",
+    [" RECIPE PRIORITY: "] = " ПРИОРИТЕТ РЕЦЕПТОВ: ",
+    [" REMOTE "] = " ПУЛЬТ ",
+    [" REMOTE * "] = " ПУЛЬТ * ",
+    [" REMOTE CONTROL SETUP "] = " НАСТРОЙКА УДАЛЁННОГО УПРАВЛЕНИЯ ",
+    [" REQUEST TO TRAIN BOX "] = " ЗАПРОС В КОНТЕЙНЕР ПОЕЗДА ",
+    [" RULES (input->output):"] = " ПРАВИЛА (вход->выход):",
+    [" RULES (keep mB in output):"] = " ПРАВИЛА (сохранять mB на выходе):",
+    [" SCAN "] = " СКАН. ",
+    [" SEARCH]"] = " ПОИСК]",
+    [" SELECT ACTION DEVICE "] = " ВЫБОР УСТРОЙСТВА ДЕЙСТВИЯ ",
+    [" SELECT ACTION ITEM FROM STORAGE "] = " ВЫБОР ПРЕДМЕТА ДЕЙСТВИЯ ИЗ ХРАНИЛИЩА ",
+    [" SELECT DESTINATION STORAGE "] = " ВЫБОР ХРАНИЛИЩА НАЗНАЧЕНИЯ ",
+    [" SELECT DEVICE / PLATFORM "] = " ВЫБОР УСТРОЙСТВА / ПЛАТФОРМЫ ",
+    [" SELECT FLUID FROM [TNK] "] = " ВЫБОР ЖИДКОСТИ ИЗ [TNK] ",
+    [" SELECT INPUT PLATFORM "] = " ВЫБОР ВХОДНОЙ ПЛАТФОРМЫ ",
+    [" SELECT INPUTS (tap to toggle) "] = " ВЫБОР ВХОДОВ (нажатие переключает) ",
+    [" SELECT MACHINES (tap to toggle):"] = " ВЫБЕРИТЕ МЕХАНИЗМЫ (нажатие переключает):",
+    [" SELECT OUTPUT PLATFORM "] = " ВЫБОР ВЫХОДНОЙ ПЛАТФОРМЫ ",
+    [" SELECT OUTPUTS (tap to toggle) "] = " ВЫБОР ВЫХОДОВ (нажатие переключает) ",
+    [" SELECT RESULT ITEM FROM STORAGE "] = " ВЫБОР ПРЕДМЕТА РЕЗУЛЬТАТА ИЗ ХРАНИЛИЩА ",
+    [" STATUS: MONITOR DISPLAY ACTIVE (NX-UI)   "] = " СТАТУС: МОНИТОР АКТИВЕН (NX-UI)   ",
+    [" STORAGE DEFRAGMENTATION "] = " ДЕФРАГМЕНТАЦИЯ ХРАНИЛИЩА ",
+    [" STORAGE RESCAN "] = " ПЕРЕСКАНИРОВАНИЕ ХРАНИЛИЩА ",
+    [" TANK "] = " РЕЗЕРВУАР ",
+    [" TARGET: "] = " ЦЕЛЬ: ",
+    [" THRESHOLD: "] = " ПОРОГ: ",
+    [" TOOL  "] = " ИНСТРУМЕНТ ",
+    [" UNLOAD "] = " ВЫГРУЗИТЬ ",
+    [" VIEW: "] = " ВИД: ",
+    [" [ + ADD ITEM ] "] = " [ + ДОБАВИТЬ ПРЕДМЕТ ] ",
+    [" [ +QUEUE MISSING ] "] = " [ +ОЧЕРЕДЬ НЕДОСТАЮЩИХ ] ",
+    [" [ BACK ] "] = " [ НАЗАД ] ",
+    [" [ BATCH TEST ] "] = " [ ПАКЕТНЫЙ ТЕСТ ] ",
+    [" [ CANCEL PAIRING ] "] = " [ ОТМЕНИТЬ СОПРЯЖЕНИЕ ] ",
+    [" [ CANCEL ] "] = " [ ОТМЕНА ] ",
+    [" [ CLEAR PROJECT ] "] = " [ ОЧИСТИТЬ ПРОЕКТ ] ",
+    [" [ CLOSE ] "] = " [ ЗАКРЫТЬ ] ",
+    [" [ CONFIRM REPLACE ALL ] "] = " [ ПОДТВЕРДИТЬ ЗАМЕНУ ВСЕХ ] ",
+    [" [ CONFIRM ] "] = " [ ПОДТВЕРДИТЬ ] ",
+    [" [ CRAFT MISSING ] "] = " [ СКРАФТИТЬ НЕДОСТАЮЩИЕ ] ",
+    [" [ DISCARD ] "] = " [ ОТБРОСИТЬ ] ",
+    [" [ EDIT ] "] = " [ ИЗМЕНИТЬ ] ",
+    [" [ EXPORT READY -> DEST ] "] = " [ ЭКСПОРТ ГОТОВОГО -> НАЗНАЧЕНИЕ ] ",
+    [" [ FILTER * ] "] = " [ ФИЛЬТР * ] ",
+    [" [ FILTER ] "] = " [ ФИЛЬТР ] ",
+    [" [ FINISH ] "] = " [ ГОТОВО ] ",
+    [" [ MACHINES ] "] = " [ МЕХАНИЗМЫ ] ",
+    [" [ NEXT ] "] = " [ ВПЕРЁД ] ",
+    [" [ OPEN NETWORK ] "] = " [ ОТКРЫТЬ СЕТЬ ] ",
+    [" [ PREV ] "] = " [ НАЗАД ] ",
+    [" [ RESCAN ALL ] "] = " [ ПЕРЕСКАН. ВСЕ ] ",
+    [" [ RESET ] "] = " [ СБРОС ] ",
+    [" [ RESULTS ] "] = " [ РЕЗУЛЬТАТЫ ] ",
+    [" [ RUN ALL ] "] = " [ ЗАПУСТИТЬ ВСЕ ] ",
+    [" [ RUN DEFRAG ] "] = " [ ЗАПУСТИТЬ ДЕФРАГ. ] ",
+    [" [ SAME ] "] = " [ ТАК ЖЕ ] ",
+    [" [ SAVE (%d RECIPES) ] "] = " [ СОХРАНИТЬ (%d РЕЦЕПТОВ) ] ",
+    [" [ SAVE ALT ] "] = " [ СОХРАНИТЬ АЛЬТ. ] ",
+    [" [ SAVE ] "] = " [ СОХРАНИТЬ ] ",
+    [" [ SCAN & TEST ] "] = " [ СКАН. И ТЕСТ ] ",
+    [" [ SCAN CLIPBOARD ] "] = " [ СКАНИРОВАТЬ ПЛАНШЕТ ] ",
+    [" [ SCAN ] "] = " [ СКАНИРОВАТЬ ] ",
+    [" [ START PAIRING (60s) ] "] = " [ НАЧАТЬ СОПРЯЖЕНИЕ (60 с) ] ",
+    [" [ TEST 1x ] "] = " [ ТЕСТ 1x ] ",
+    [" [ TURTLE ] "] = " [ ЧЕРЕПАХА ] ",
+    [" [+ NEW GROUP] "] = " [+ НОВАЯ ГРУППА] ",
+    [" [+ADD] "] = " [+ДОБ.] ",
+    [" [+NEW GROUP] "] = " [+НОВАЯ ГРУППА] ",
+    [" [+QUEUE] "] = " [+ОЧЕРЕДЬ] ",
+    [" [APPLY] "] = " [ПРИМЕНИТЬ] ",
+    [" [AUT] "] = " [АВТО] ",
+    [" [BUF] "] = " [БУФ] ",
+    [" [CANCEL] "] = " [ОТМЕНА] ",
+    [" [CHANGE] "] = " [ИЗМЕНИТЬ] ",
+    [" [CLEAR] "] = " [ОЧИСТИТЬ] ",
+    [" [CLOSE] "] = " [ЗАКРЫТЬ] ",
+    [" [DEL] "] = " [УДАЛ.] ",
+    [" [DONE] "] = " [ГОТОВО] ",
+    [" [EDIT] "] = " [ИЗМ.] ",
+    [" [EMPTY ALL]  OFF "] = " [ОПУСТОШИТЬ ВСЁ]  ВЫКЛ ",
+    [" [EMPTY ALL]  ON  "] = " [ОПУСТОШИТЬ ВСЁ]  ВКЛ  ",
+    [" [FAIL]"] = " [ОШИБКА]",
+    [" [HIDE] "] = " [СКРЫТЬ] ",
+    [" [MAIN] "] = " [ОСНОВН.] ",
+    [" [MAN] "] = " [ВРУЧН.] ",
+    [" [MAX] "] = " [МАКС.] ",
+    [" [PAUSE ALL] "] = " [ПАУЗА ВСЕ] ",
+    [" [PAUSE] "] = " [ПАУЗА] ",
+    [" [PROJ] "] = " [ПРОЕКТ] ",
+    [" [PROVIDER] OFF"] = " [ПОСТАВЩИК] ВЫКЛ",
+    [" [PROVIDER] ON (pull-only src) "] = " [ПОСТАВЩИК] ВКЛ (только забор) ",
+    [" [REMOVE] "] = " [УДАЛИТЬ] ",
+    [" [REPLACE ALL] "] = " [ЗАМЕНИТЬ ВСЕ] ",
+    [" [REQUEST] "] = " [ЗАПРОСИТЬ] ",
+    [" [RESET (SAME)] "] = " [СБРОС (КАК ВХОД)] ",
+    [" [RESUME] "] = " [ПРОДОЛЖИТЬ] ",
+    [" [RUN NOW] "] = " [ЗАПУСТИТЬ] ",
+    [" [RUN] "] = " [ПУСК] ",
+    [" [SAVE] "] = " [СОХРАНИТЬ] ",
+    [" [SCAN] "] = " [СКАН.] ",
+    [" [SET NAME] "] = " [ЗАДАТЬ ИМЯ] ",
+    [" [SHOW ALL] "] = " [ПОКАЗАТЬ ВСЕ] ",
+    [" [SHOW] "] = " [ПОКАЗАТЬ] ",
+    [" [SUF] "] = " [МЕТКА] ",
+    [" [SYNC] "] = " [СИНХР.] ",
+    [" [T.BOX] "] = " [ПОЕЗД] ",
+    [" [TNK] "] = " [РЕЗ.] ",
+    [" [TURTLE] "] = " [ЧЕРЕП.] ",
+    [" [VAULT] "] = " [ХРАН.] ",
+    [" [VIEW] "] = " [СМОТРЕТЬ] ",
+    [" already at target"] = " уже достиг цели",
+    [" device offline!"] = " устройство не в сети!",
+    [" fluid missing!"] = " жидкость не указана!",
+    [" fluid out of stock!"] = " жидкости нет в запасе!",
+    [" ing)"] = " ингр.)",
+    [" item missing!"] = " предмет не указан!",
+    [" item out of stock!"] = " предмета нет на складе!",
+    [" items from train box"] = " предметов из контейнера поезда",
+    [" label (Enter=clear): "] = " метка (Enter=очистить): ",
+    [" more"] = "",
+    [" pcs."] = " шт.",
+    [" queued craft(s)"] = " крафтов из очереди",
+    [" recipes!"] = " рецептов!",
+    [" to train box."] = " в контейнер поезда.",
+    ["! CANNOT CRAFT"] = "! НЕВОЗМОЖНО СКРАФТИТЬ",
+    ["! CANNOT CRAFT BASE ITEM"] = "! НЕВОЗМОЖНО СОЗДАТЬ ОСНОВНОЙ ПРЕДМЕТ",
+    ["! ERROR"] = "! ОШИБКА",
+    ["! FLUID SUBCRAFT FAILED"] = "! ОШИБКА КРАФТА ЖИДКОСТИ",
+    ["! MACHINE NOT FOUND"] = "! МЕХАНИЗМ НЕ НАЙДЕН",
+    ["! MISSING SECONDARY ITEMS"] = "! НЕ ХВАТАЕТ ДОПОЛНИТЕЛЬНЫХ ПРЕДМЕТОВ",
+    ["! NEED"] = "! НУЖНО",
+    ["! NEED TOOL"] = "! НУЖЕН ИНСТРУМЕНТ",
+    ["! NO RECIPE"] = "! НЕТ РЕЦЕПТА",
+    ["! NO TURTLE ASSIGNED"] = "! ЧЕРЕПАХА НЕ НАЗНАЧЕНА",
+    ["! NOT ENOUGH RESOURCES"] = "! НЕДОСТАТОЧНО РЕСУРСОВ",
+    ["! NOT ENOUGH TOOL DURABILITY"] = "! НЕДОСТАТОЧНО ПРОЧНОСТИ ИНСТРУМЕНТА",
+    ["! SHORTAGE"] = "! НЕДОСТАЧА",
+    ["! Set Train Box in NETWORK"] = "! Назначьте контейнер поезда в СЕТИ",
+    ["! TURTLE GRID BLOCKED"] = "! СЕТКА ЧЕРЕПАХИ ЗАБЛОКИРОВАНА",
+    ["%d recipe%s, %d byproduct%s"] = "%d рецептов, %d побочных продуктов",
+    ["%d step%s (tap ITEM/TOOL to toggle)"] = "%d действий (ПРЕДМЕТ/ИНСТРУМЕНТ переключается нажатием)",
+    ["(No destination storages found)"] = "(Хранилища назначения не найдены)",
+    ["(input empty or unavailable)"] = "(вход пуст или недоступен)",
+    ["(no matches)"] = "(совпадений нет)",
+    ["(no rules defined)"] = "(правила не заданы)",
+    ["(none)"] = "(нет)",
+    ["(same as input)"] = "(как на входе)",
+    ["(tap to set)"] = "(нажмите для настройки)",
+    ["), or press Enter for #1:"] = "), или Enter для №1:",
+    ["+ CRAFTABLE"] = "+ МОЖНО СКРАФТИТЬ",
+    ["+ FLUID (Spout/Basin)"] = "+ ЖИДКОСТЬ (носик/таз)",
+    ["+ ITEM (Deployer)"] = "+ ПРЕДМЕТ (манипулятор)",
+    ["+ Pick device..."] = "+ Выбрать устройство...",
+    ["+ Pick fluid..."] = "+ Выбрать жидкость...",
+    ["+ Pick item..."] = "+ Выбрать предмет...",
+    ["+ Select input machine..."] = "+ Выберите входной механизм...",
+    ["+RECIPES"] = "+РЕЦЕПТЫ",
+    ["-- IF "] = "-- ЕСЛИ ",
+    ["... and "] = "... и ещё ",
+    ["0 items dropped. Add item or retry."] = "Получено 0 предметов. Добавьте предмет или повторите.",
+    ["1. Connect a chest to the wired modem network."] = "1. Подключите сундук к сети проводных модемов.",
+    ["2. In NETWORK, mark that chest with [PROJ]."] = "2. Во вкладке СЕТЬ отметьте сундук кнопкой [PROJ].",
+    ["<NONE>"] = "<НЕТ>",
+    ["<type item name...>"] = "<введите имя предмета...>",
+    ["<type name...>"] = "<введите имя...>",
+    ["ACTION"] = "ДЕЙСТВИЕ",
+    ["ADD ALTERNATIVE RECIPE"] = "ДОБАВИТЬ АЛЬТЕРНАТИВНЫЙ РЕЦЕПТ",
+    ["AEGIS craft done"] = "AEGIS: крафт завершён",
+    ["AEGIS craft failed"] = "AEGIS: крафт не удался",
+    ["AEGIS queue"] = "Очередь AEGIS",
+    ["AEGIS status"] = "Статус AEGIS",
+    ["Action count: "] = "Количество действий: ",
+    ["Actions:"] = "Действия:",
+    ["Add manually"] = "Добавить вручную",
+    ["Added %d project items to Craft Queue!"] = "Добавлено %d позиций проекта в очередь крафта!",
+    ["Aegis #"] = "Aegis №",
+    ["Affects "] = "Затрагивает ",
+    ["All devices hidden by filter. Tap [ FILTER ] to change."] = "Все устройства скрыты фильтром. Нажмите [ФИЛЬТР] для изменения.",
+    ["All required schematic items have known recipes or are already in stock!"] = "Для всех предметов есть рецепты, либо они уже на складе!",
+    ["Alt added: "] = "Альтернатива добавлена: ",
+    ["Alt for: "] = "Альтернатива для: ",
+    ["Amount for "] = "Количество для ",
+    ["Analyzing output data..."] = "Анализ выходных данных...",
+    ["Assign a Clipboard chest with [PROJ] in NETWORK."] = "Назначьте сундук для планшета кнопкой [PROJ] в СЕТИ.",
+    ["Assign a chest with [PROJ] in NETWORK, then scan its Clipboard."] = "Назначьте сундук кнопкой [PROJ] в СЕТИ, затем сканируйте планшет.",
+    ["Assign a turtle in NETWORK tab."] = "Назначьте черепаху во вкладке СЕТЬ.",
+    ["Assigned peripheral does not support inventory item details."] = "Назначенное устройство не поддерживает сведения о предметах инвентаря.",
+    ["Assigned project chest is offline: "] = "Назначенный сундук проекта не в сети: ",
+    ["Autostock check queued"] = "Проверка автопополнения добавлена в очередь",
+    ["Autostock fluid: "] = "Автопополнение жидкости: ",
+    ["Autostocking "] = "Автопополнение ",
+    ["Awaiting turtle (cancel to abort)..."] = "Ожидание черепахи (отмена для прерывания)...",
+    ["Awaiting turtle processing..."] = "Ожидание обработки черепахой...",
+    ["BASE RAW MATERIAL"] = "ОСНОВНОЕ СЫРЬЁ",
+    ["BUFFER NODE: "] = "БУФЕРНЫЙ УЗЕЛ: ",
+    ["Bad recipe output amount"] = "Некорректное количество результата рецепта",
+    ["Balancing vaults and buffer..."] = "Распределение между хранилищами и буфером...",
+    ["Base / op:"] = "Основа / операция:",
+    ["Base ingredient count per craft: "] = "Количество основного ингредиента за крафт: ",
+    ["Base ingredients per operation:"] = "Основные ингредиенты за операцию:",
+    ["Batch complete! Configure results."] = "Пакет завершён! Настройте результаты.",
+    ["Batch done: %d crafted, %d failed | Ready: %d/%d"] = "Готово: создано %d, ошибок %d | Готово: %d/%d",
+    ["Batch testing (feeding & scanning)..."] = "Пакетная проверка (подача и сканирование)...",
+    ["Busy: "] = "Занято: ",
+    ["CANCEL: stuck in "] = "ОТМЕНА: застрял в ",
+    ["CHANCE"] = "ШАНС",
+    ["CHECKLIST"] = "СПИСОК",
+    ["Can't clear turtle grid for "] = "Не удалось очистить сетку черепахи для ",
+    ["Can't craft:"] = "Невозможно скрафтить:",
+    ["Can't craft: "] = "Невозможно скрафтить: ",
+    ["Can't make "] = "Невозможно создать ",
+    ["Can't make tool: "] = "Не удаётся создать инструмент: ",
+    ["Cancel requested."] = "Запрошена отмена.",
+    ["Cancelled by user."] = "Отменено пользователем.",
+    ["Cannot craft required tool."] = "Невозможно создать нужный инструмент.",
+    ["Cannot prepare machine items"] = "Не удалось подготовить предметы механизма",
+    ["Clearing worker grid..."] = "Очистка сетки исполнителя...",
+    ["Clipboard is empty (0 material entries)."] = "Планшет пуст (0 позиций материалов).",
+    ["Collecting craft output..."] = "Сбор результатов крафта...",
+    ["Collecting outputs..."] = "Сбор результатов...",
+    ["Connected / Paired Devices:"] = "Подключённые / сопряжённые устройства:",
+    ["Could not push inputs to "] = "Не удалось передать входные предметы в ",
+    ["Craft aborted: "] = "Крафт прерван: ",
+    ["Craft failed"] = "Крафт не удался",
+    ["Craft started: "] = "Крафт запущен: ",
+    ["Craftable from stock (no shortage)."] = "Можно скрафтить из запасов (дефицита нет).",
+    ["Crafted: "] = "Создано: ",
+    ["Crafting (%d/%d): %s..."] = "Крафт (%d/%d): %s...",
+    ["Create custom groups for parallel crafting."] = "Создавайте группы для параллельного крафта.",
+    ["Current: "] = "Текущий: ",
+    ["DEFICIT"] = "ДЕФИЦИТ",
+    ["DEFICIT (HIGH)"] = "ДЕФИЦИТ (БОЛЬШЕ)",
+    ["DEFRAG"] = "ДЕФРАГ.",
+    ["DEL"] = "УДАЛ.",
+    ["DEST: "] = "НАЗН.: ",
+    ["DEVICE"] = "УСТРОЙСТВО",
+    ["DEVICE TYPE"] = "ТИП УСТРОЙСТВА",
+    ["Defragmentation complete!"] = "Дефрагментация завершена!",
+    ["Delivered "] = "Доставлено ",
+    ["Deployers, Spouts, Basins"] = "Манипуляторы, носики, тазы",
+    ["Depot, Basin, etc."] = "Депо, таз и т. п.",
+    ["Destination: "] = "Назначение: ",
+    ["Drop chance % (1-100, or '-' to reset): "] = "Шанс выпадения % (1–100, \"-\" для сброса): ",
+    ["EMPTY ALL"] = "ОПУСТОШИТЬ ВСЁ",
+    ["ERR: "] = "ОШИБКА: ",
+    ["ERR: Action #"] = "ОШИБКА: действие №",
+    ["ERR: Assign Train Box in NETWORK!"] = "ОШИБКА: назначьте контейнер поезда в СЕТИ!",
+    ["ERR: Assign Turtle!"] = "ОШИБКА: назначьте черепаху!",
+    ["ERR: Cannot push items to "] = "ОШИБКА: не удалось передать предметы в ",
+    ["ERR: Destination storage not available!"] = "ОШИБКА: хранилище назначения недоступно!",
+    ["ERR: Grid empty!"] = "ОШИБКА: сетка пуста!",
+    ["ERR: KEEP crashed: "] = "ОШИБКА: сбой автопополнения: ",
+    ["ERR: KEEP failed for "] = "ОШИБКА: автопополнение не удалось для ",
+    ["ERR: Machine offline!"] = "ОШИБКА: механизм не в сети!",
+    ["ERR: No output detected (timed out)!"] = "ОШИБКА: результат не обнаружен (время вышло)!",
+    ["ERR: Output device offline!"] = "ОШИБКА: выходное устройство не в сети!",
+    ["ERR: Output platform offline!"] = "ОШИБКА: выходная платформа не в сети!",
+    ["ERR: Process failed!"] = "ОШИБКА: процесс не удался!",
+    ["ERR: Select Target Platform!"] = "ОШИБКА: выберите целевую платформу!",
+    ["ERR: Target platform offline!"] = "ОШИБКА: целевая платформа не в сети!",
+    ["ERR: Train Box center 3x3 empty!"] = "ОШИБКА: центр 3x3 контейнера поезда пуст!",
+    ["ERR: Train box offline!"] = "ОШИБКА: контейнер поезда не в сети!",
+    ["ERR: Turtle offline: "] = "ОШИБКА: черепаха не в сети: ",
+    ["ERR: craft failed for "] = "ОШИБКА: крафт не удался для ",
+    ["ERR: fluid craft failed"] = "ОШИБКА: крафт жидкости не удался",
+    ["ERR: no recipe for "] = "ОШИБКА: нет рецепта для ",
+    ["ERR: no resources for "] = "ОШИБКА: нет ресурсов для ",
+    ["ERR: nothing moved. Check train box."] = "ОШИБКА: ничего не перемещено. Проверьте контейнер поезда.",
+    ["ERROR JOURNAL (LAST 10 ENTRIES)"] = "ЖУРНАЛ ОШИБОК (ПОСЛЕДНИЕ 10 ЗАПИСЕЙ)",
+    ["ERRORS"] = "ОШИБКИ",
+    ["Editing "] = "Редактирование ",
+    ["Enter Search query: "] = "Введите поисковый запрос: ",
+    ["Enter a group name first!"] = "Сначала введите имя группы!",
+    ["Enter count for "] = "Введите количество для ",
+    ["Enter fluid search: "] = "Введите поиск жидкости: ",
+    ["Enter quantity: "] = "Введите количество: ",
+    ["Errors cleared"] = "Ошибки очищены",
+    ["Exported %d pcs (%d types) -> %s"] = "Экспортировано %d шт. (%d типов) -> %s",
+    ["FAIL "] = "ОШИБКА ",
+    ["FAIL #"] = "ОШИБКА №",
+    ["FIND: "] = "ПОИСК: ",
+    ["FIND: [ "] = "ПОИСК: [ ",
+    ["FLUID"] = "ЖИДКОСТЬ",
+    ["FLUIDNEST:"] = "ВЛОЖЕННАЯ ЖИДКОСТЬ:",
+    ["FREE"] = "СВОБОДНО",
+    ["Failed to list the assigned project chest."] = "Не удалось получить содержимое назначенного сундука.",
+    ["Feeding base ingredients..."] = "Подача основных ингредиентов...",
+    ["Fluid amount (mB): "] = "Количество жидкости (mB): ",
+    ["Fluid craft failed"] = "Крафт жидкости не удался",
+    ["Fluid input device not found: "] = "Устройство входа жидкости не найдено: ",
+    ["Fluid: "] = "Жидкость: ",
+    ["Free up storage space and retry."] = "Освободите место в хранилище и повторите.",
+    ["GROUPS"] = "ГРУППЫ",
+    ["Group name: "] = "Имя группы: ",
+    ["Group: "] = "Группа: ",
+    ["Higher position = higher priority (top runs first)."] = "Чем выше позиция, тем выше приоритет (первой верхняя).",
+    ["IDLE"] = "ОЖИДАНИЕ",
+    ["IDLE. No active craft."] = "ОЖИДАНИЕ. Активных крафтов нет.",
+    ["IDLE. Queue: "] = "ОЖИДАНИЕ. Очередь: ",
+    ["IF "] = "ЕСЛИ ",
+    ["IF value for "] = "Значение ЕСЛИ для ",
+    ["IN STOCK"] = "НА СКЛАДЕ",
+    ["INTERRUPTED: "] = "ПРЕРВАНО: ",
+    ["ITEM / FLUID"] = "ПРЕДМЕТ / ЖИДКОСТЬ",
+    ["ITEM ID"] = "ID ПРЕДМЕТА",
+    ["ITEM NAME"] = "ИМЯ ПРЕДМЕТА",
+    ["ITEM NAME (A-Z)"] = "ИМЯ ПРЕДМЕТА (А-Я)",
+    ["Indexed %d vaults (%d total items)"] = "Проиндексировано %d хранилищ (всего %d предметов)",
+    ["Indexed %d vaults. Cleaned: %s"] = "Проиндексировано %d хранилищ. Очищено: %s",
+    ["Input:"] = "Вход:",
+    ["Invalid craft order"] = "Некорректный заказ крафта",
+    ["Invalid edit parameters"] = "Некорректные параметры редактирования",
+    ["Invalid item or quantity"] = "Некорректный предмет или количество",
+    ["Item input device not found: "] = "Устройство входа предметов не найдено: ",
+    ["Item output device not found: "] = "Устройство выхода предметов не найдено: ",
+    ["Item: "] = "Предмет: ",
+    ["Items moved / balanced: "] = "Перемещено / распределено предметов: ",
+    ["KEEP"] = "ЗАПАС",
+    ["KEEP done: "] = "Автопополнение завершено: ",
+    ["Keep active / assigned visible"] = "Показывать активные / назначенные",
+    ["Keep rule saved"] = "Правило запаса сохранено",
+    ["LOGISTIC"] = "ЛОГИСТИКА",
+    ["Learning cancelled."] = "Изучение отменено.",
+    ["MACHINE GROUPS:"] = "ГРУППЫ МЕХАНИЗМОВ:",
+    ["MACHINES"] = "МЕХАНИЗМЫ",
+    ["MAIN VAULTS CAPACITY"] = "ЁМКОСТЬ ОСНОВНЫХ ХРАНИЛИЩ",
+    ["MAX"] = "МАКС.",
+    ["MISSING"] = "НЕ ХВАТАЕТ",
+    ["Machine missing fluid methods: "] = "У механизма нет методов работы с жидкостями: ",
+    ["Machine not found: "] = "Механизм не найден: ",
+    ["Machine: "] = "Механизм: ",
+    ["Made: "] = "Создано: ",
+    ["Mark an empty tank with [TNK] in NETWORK."] = "Отметьте пустой резервуар кнопкой [TNK] в СЕТИ.",
+    ["Missing base item: "] = "Не хватает основного предмета: ",
+    ["Missing components"] = "Не хватает компонентов",
+    ["Missing components to craft "] = "Не хватает компонентов для крафта ",
+    ["Missing item: "] = "Не хватает предмета: ",
+    ["Missing tool: "] = "Не хватает инструмента: ",
+    ["Mode:"] = "Режим:",
+    ["Modified by Mstr_Max"] = "Изменено Mstr_Max",
+    ["Monitor not found on side: "] = "Монитор не найден на стороне: ",
+    ["NEED"] = "НУЖНО",
+    ["NEST:"] = "ВЛОЖЕННО:",
+    ["NETWORK"] = "СЕТЬ",
+    ["NEW TURTLES"] = "НОВЫЕ ЧЕРЕПАХИ",
+    ["NOTE"] = "ПРИМЕЧАНИЕ",
+    ["Name: "] = "Имя: ",
+    ["Need %d mB %s, have %d"] = "Нужно %d mB %s, есть %d",
+    ["Need %d mB %s, have %d (no recipe)"] = "Нужно %d mB %s, есть %d (нет рецепта)",
+    ["Need %d mB %s, made only %d"] = "Нужно %d mB %s, создано только %d",
+    ["Need %d mB %s, stuck at %d"] = "Нужно %d mB %s, остановка на %d",
+    ["Need %dx %s (have %d)"] = "Нужно %dx %s (есть %d)",
+    ["Need %dx %s, have %d"] = "Нужно %dx %s, есть %d",
+    ["No Create Clipboard found in the assigned project chest."] = "В назначенном сундуке не найден Create Clipboard.",
+    ["No [MAIN] vaults configured. Set roles in NETWORK tab."] = "Хранилища [MAIN] не настроены. Назначьте роли во вкладке СЕТЬ.",
+    ["No clipboard scanned yet. Put a Create Clipboard in the assigned chest and tap [SCAN CLIPBOARD]."] = "Планшет ещё не сканирован. Положите Create Clipboard в назначенный сундук и нажмите [СКАНИРОВАТЬ ПЛАНШЕТ].",
+    ["No crafts yet."] = "Крафтов ещё не было.",
+    ["No custom machine groups configured."] = "Пользовательские группы механизмов не настроены.",
+    ["No errors recorded. System running smoothly."] = "Ошибок нет. Система работает нормально.",
+    ["No fluid recipe for "] = "Нет рецепта жидкости для ",
+    ["No fluids found in [TNK] tanks."] = "В резервуарах [TNK] жидкости не найдены.",
+    ["No fluids. Mark tanks with [TNK] in NETWORK."] = "Нет жидкостей. Отметьте резервуары [TNK] в СЕТИ.",
+    ["No free [TNK] tank for output: "] = "Нет свободного резервуара [TNK] для выхода: ",
+    ["No groups. Tap [+NEW GROUP] to create one."] = "Нет групп. Нажмите [+НОВАЯ ГРУППА], чтобы создать.",
+    ["No items available in storage."] = "В хранилище нет доступных предметов.",
+    ["No items in this view."] = "В этом списке нет предметов.",
+    ["No machines connected to network"] = "К сети не подключены механизмы",
+    ["No output items recorded. Tap [ + ADD ITEM ] below."] = "Выходные предметы не записаны. Нажмите [+ ДОБАВИТЬ ПРЕДМЕТ] ниже.",
+    ["No paired tablets yet."] = "Пока нет сопряжённых планшетов.",
+    ["No peripherals detected on network."] = "В сети не обнаружены периферийные устройства.",
+    ["No raw material shortage! Warehouse has enough base resources."] = "Дефицита сырья нет! На складе достаточно ресурсов.",
+    ["No recipe"] = "Нет рецепта",
+    ["No recipes. Add one via +RECIPES tab."] = "Нет рецептов. Добавьте их во вкладке +РЕЦЕПТЫ.",
+    ["No secondary actions configured"] = "Дополнительные действия не настроены",
+    ["No turtle available"] = "Нет доступной черепахи",
+    ["Not connected to the network."] = "Не подключено к сети.",
+    ["Nothing exported (already in DEST or 0 in stock)."] = "Ничего не экспортировано (уже в назначении или нет на складе).",
+    ["OFFLINE"] = "НЕ В СЕТИ",
+    ["OK READY"] = "OK ГОТОВО",
+    ["OUTPUT"] = "ВЫХОД",
+    ["OUTPUT ITEM"] = "ВЫХОДНОЙ ПРЕДМЕТ",
+    ["Optimizing storage..."] = "Оптимизация хранилища...",
+    ["Optimizing tanks..."] = "Оптимизация резервуаров...",
+    ["Output count per craft: "] = "Количество результатов за крафт: ",
+    ["Output device not found: "] = "Выходное устройство не найдено: ",
+    ["Output:"] = "Выход:",
+    ["PAIR"] = "СОПРЯЖЕНИЕ",
+    ["PAUSED"] = "ПАУЗА",
+    ["PERIPHERAL BUS MATRIX (SYSTEM SETUP):"] = "МАТРИЦА ПЕРИФЕРИИ (НАСТРОЙКА СИСТЕМЫ):",
+    ["PERIPHERAL MATRIX:"] = "МАТРИЦА ПЕРИФЕРИИ:",
+    ["PRIMARY shown in yellow. [X] only for alt recipes."] = "Основной показан жёлтым. [X] только для альтернативных рецептов.",
+    ["PRIMARY yellow. Add alts via +RECIPES learning."] = "Основной выделен жёлтым. Альтернативы добавляются через +РЕЦЕПТЫ.",
+    ["PROJECT"] = "ПРОЕКТ",
+    ["PROVIDER (pull-only source)"] = "ПОСТАВЩИК (только забор предметов)",
+    ["Page %d of %d"] = "Страница %d из %d",
+    ["Page %d/%d"] = "Страница %d/%d",
+    ["Pairing not active on server. Press [PAIR REMOTE] in NETWORK tab."] = "Сопряжение не активно. Нажмите [СОПРЯЖЕНИЕ] во вкладке СЕТЬ.",
+    ["Pairing: ACTIVE ("] = "Сопряжение: АКТИВНО (",
+    ["Pairing: INACTIVE (press below to pair)"] = "Сопряжение: НЕАКТИВНО (нажмите ниже для начала)",
+    ["Partial autostock: "] = "Частичное автопополнение: ",
+    ["Place recipe in center 3x3 of barrel,"] = "Поместите рецепт в центр 3x3 контейнера,",
+    ["Please wait..."] = "Пожалуйста, подождите...",
+    ["Pocket #"] = "Карманный №",
+    ["Priority"] = "Приоритет",
+    ["Progress: %d / %d"] = "Прогресс: %d / %d",
+    ["Project chest assigned. Put a Create Clipboard inside and scan it."] = "Сундук проекта назначен. Положите внутрь Create Clipboard и сканируйте.",
+    ["Project chest unassigned. Select another chest with [PROJ] in NETWORK."] = "Сундук проекта отвязан. Выберите другой кнопкой [PROJ] в СЕТИ.",
+    ["Project cleared. Scan the Clipboard in the assigned chest."] = "Проект очищен. Сканируйте планшет в назначенном сундуке.",
+    ["Project reads a Create Clipboard only from the assigned chest."] = "Проект читает Create Clipboard только из назначенного сундука.",
+    ["Pushing secondary actions..."] = "Передача предметов дополнительных действий...",
+    ["Pushing test ingredients..."] = "Передача тестовых ингредиентов...",
+    ["QTY / DUR"] = "КОЛ. / ПРОЧН.",
+    ["QTY/OP"] = "КОЛ./ОП.",
+    ["QUANTITY_PICKER"] = "ВЫБОР КОЛИЧЕСТВА",
+    ["Queue empty."] = "Очередь пуста.",
+    ["Queue empty. Use [+QUEUE] in order popup."] = "Очередь пуста. Используйте [+ОЧЕРЕДЬ] в окне заказа.",
+    ["Queue is empty"] = "Очередь пуста",
+    ["Queue item not found"] = "Позиция очереди не найдена",
+    ["Queue quantity updated"] = "Количество в очереди обновлено",
+    ["Queued: "] = "В очереди: ",
+    ["READY"] = "ГОТОВО",
+    ["RECIPE PRIORITY: "] = "ПРИОРИТЕТ РЕЦЕПТОВ: ",
+    ["RECIPE SCAN RESULT"] = "РЕЗУЛЬТАТ СКАНИРОВАНИЯ РЕЦЕПТА",
+    ["RECIPES"] = "РЕЦЕПТЫ",
+    ["RESCAN"] = "ПЕРЕСКАН.",
+    ["ROLE (TAP)"] = "РОЛЬ (НАЖАТЬ)",
+    ["Rebuilding memory index..."] = "Перестроение индекса...",
+    ["Recipe:  "] = "Рецепт:  ",
+    ["Reconnect device or re-learn recipe."] = "Переподключите устройство или заново изучите рецепт.",
+    ["Recovering items & cleaning up..."] = "Возврат предметов и очистка...",
+    ["Recursion cycle on "] = "Цикл рекурсии на ",
+    ["Recursion too deep: "] = "Слишком глубокая рекурсия: ",
+    ["Remote not paired with server"] = "Пульт не сопряжён с сервером",
+    ["Removed from queue"] = "Удалено из очереди",
+    ["Replace ALL:"] = "Заменить ВСЕ:",
+    ["Required for: "] = "Требуется для: ",
+    ["Rescan complete!"] = "Пересканирование завершено!",
+    ["Residue stuck (item storage full?)."] = "Остатки застряли (возможно, хранилище заполнено).",
+    ["Returned to editor with setup intact."] = "Возврат в редактор с сохранением настроек.",
+    ["Rule deleted"] = "Правило удалено",
+    ["Rule not found"] = "Правило не найдено",
+    ["Running all "] = "Запуск всех ",
+    ["SAVE BLOCKED: "] = "СОХРАНЕНИЕ ЗАБЛОКИРОВАНО: ",
+    ["SAVE FAIL (disk space?): "] = "ОШИБКА СОХРАНЕНИЯ (нет места?): ",
+    ["SERIALIZE FAIL: "] = "ОШИБКА СЕРИАЛИЗАЦИИ: ",
+    ["SHORTAGE"] = "НЕДОСТАЧА",
+    ["SORT: "] = "СОРТ.: ",
+    ["SRC: "] = "ИСТ.: ",
+    ["STATUS"] = "СТАТУС",
+    ["STATUS (PROBLEM)"] = "СТАТУС (ПРОБЛЕМЫ)",
+    ["STATUS (READY)"] = "СТАТУС (ГОТОВЫЕ)",
+    ["STATUS: "] = "СТАТУС: ",
+    ["STOCK"] = "СКЛАД",
+    ["STORAGE"] = "ХРАНИЛИЩЕ",
+    ["Saved: "] = "Сохранено: ",
+    ["Scan a clipboard first before exporting!"] = "Сначала отсканируйте планшет!",
+    ["Scan alt recipe, then [SAVE] to add as alt."] = "Сканируйте альтернативный рецепт, затем [СОХРАНИТЬ].",
+    ["Scanned %d types (%d pcs) | Ready: %d/%d"] = "Сканировано %d типов (%d шт.) | Готово: %d/%d",
+    ["Scanning all connected vaults..."] = "Сканирование всех подключённых хранилищ...",
+    ["Scanning machine state..."] = "Сканирование состояния механизма...",
+    ["Search item: "] = "Поиск предмета: ",
+    ["Select action type to add:"] = "Выберите тип добавляемого действия:",
+    ["Select ingredient (1-"] = "Выберите ингредиент (1–",
+    ["Select machine:"] = "Выберите механизм:",
+    ["Single machine"] = "Один механизм",
+    ["Sorting items into assigned homes..."] = "Сортировка предметов по назначенным местам...",
+    ["Step %d/%d"] = "Шаг %d/%d",
+    ["Stock already at target"] = "Запас уже достиг цели",
+    ["Stock search: "] = "Поиск на складе: ",
+    ["Stock: "] = "На складе: ",
+    ["Storage optimized!"] = "Хранилище оптимизировано!",
+    ["Studio reset."] = "Редактор сброшен.",
+    ["Sub-task %d/%d"] = "Подзадача %d/%d",
+    ["Success! Confirm entry."] = "Успешно! Подтвердите запись.",
+    ["T# FLUID NAME"] = "T# ИМЯ ЖИДКОСТИ",
+    ["TANK"] = "РЕЗЕРВУАР",
+    ["TURTLE"] = "ЧЕРЕПАХА",
+    ["TURTLE GROUP"] = "ГРУППА ЧЕРЕПАХ",
+    ["TYPE"] = "ТИП",
+    ["Tags"] = "Метки",
+    ["Tank: %d/%d | Vaults: %d | Types: %d | Total: %d"] = "Резервуар: %d/%d | Хранилища: %d | Типы: %d | Всего: %d",
+    ["Tanks optimized!"] = "Резервуары оптимизированы!",
+    ["Tap [+ ADD ACTION] above to add Deployers or Spouts"] = "Нажмите [+ ДОБАВИТЬ ДЕЙСТВИЕ], чтобы добавить манипулятор или носик",
+    ["Tap [+ NEW GROUP] above to create a group."] = "Нажмите [+ НОВАЯ ГРУППА], чтобы создать группу.",
+    ["Tap [FINISH] anytime to stop & open results"] = "Нажмите [ГОТОВО], чтобы остановить и открыть результаты",
+    ["Tap [RESCAN ALL] to clean"] = "Нажмите [ПЕРЕСКАН. ВСЕ] для очистки",
+    ["Tap box to override"] = "Нажмите на поле, чтобы изменить",
+    ["Target: "] = "Цель: ",
+    ["Test cancelled."] = "Тест отменён.",
+    ["Test complete! Configure results."] = "Тест завершён! Настройте результаты.",
+    ["Testing: "] = "Проверка: ",
+    ["This item only:"] = "Только этот предмет:",
+    ["Title"] = "Название",
+    ["Tool deficit: %s (missing %dx)"] = "Дефицит инструмента: %s (не хватает %dx)",
+    ["Top = tried first. Recursion falls back down the list."] = "Верхний пробуется первым. Рекурсия идёт вниз по списку.",
+    ["Train box is empty or not reachable"] = "Контейнер поезда пуст или недоступен",
+    ["Type number in terminal"] = "Введите число в терминале",
+    ["UNCRAFTABLE ITEM"] = "ПРЕДМЕТ БЕЗ РЕЦЕПТА",
+    ["USAGE %"] = "ЗАПОЛНЕНИЕ %",
+    ["USED / MAX SLOTS"] = "ЗАНЯТО / ВСЕГО СЛОТОВ",
+    ["Unknown Item"] = "Неизвестный предмет",
+    ["Unknown error"] = "Неизвестная ошибка",
+    ["Unloaded "] = "Выгружено ",
+    ["Use [E] in RECIPES to reassign machine."] = "Используйте [E] в РЕЦЕПТАХ для переназначения механизма.",
+    ["Use [E] in RECIPES to reassign."] = "Используйте [E] в РЕЦЕПТАХ для переназначения.",
+    ["Used: %d/%d (%d free)"] = "Занято: %d/%d (%d свободно)",
+    ["VAULT NAME"] = "ИМЯ ХРАНИЛИЩА",
+    ["VAULTS"] = "ХРАНИЛИЩА",
+    ["Vaults: %d | Types: %d | Total: %d"] = "Хранилища: %d | Типы: %d | Всего: %d",
+    ["Waiting for craft to finish..."] = "Ожидание завершения крафта...",
+    ["Waiting for output (cancel to abort)..."] = "Ожидание результата (отмена для прерывания)...",
+    ["Whole tool durability: "] = "Полная прочность инструмента: ",
+    ["[  CHANCE  ]"] = "[  ШАНС  ]",
+    ["[  NORMAL  ]"] = "[ ОБЫЧНЫЙ ]",
+    ["[  RECIPE   ]"] = "[  РЕЦЕПТ   ]",
+    ["[ + ADD ACTION ]"] = "[ + ДОБАВИТЬ ДЕЙСТВИЕ ]",
+    ["[ + ADD ALT ]"] = "[ + ДОБАВИТЬ АЛЬТ. ]",
+    ["[ + ADD ]"] = "[ + ДОБАВИТЬ ]",
+    ["[ BACK ]"] = "[ НАЗАД ]",
+    ["[ BYPRODUCT ]"] = "[ ПОБОЧНЫЙ ]",
+    ["[ CHANCE ]"] = "[ ШАНС ]",
+    ["[ CLEAR ]"] = "[ ОЧИСТИТЬ ]",
+    ["[ NEXT ]"] = "[ ВПЕРЁД ]",
+    ["[ NORMAL ]"] = "[ОБЫЧНЫЙ]",
+    ["[ PREV ]"] = "[ НАЗАД ]",
+    ["[!] PROJECT CLIPBOARD CHEST NOT ASSIGNED"] = "[!] СУНДУК ДЛЯ ПЛАНШЕТА ПРОЕКТА НЕ НАЗНАЧЕН",
+    ["[*]=make primary  [X]=delete  top=tried first"] = "[*]=сделать основным  [X]=удалить  сверху=первый",
+    ["[+IF]"] = "[+ЕСЛИ]",
+    ["[+KEEP]"] = "[+ЗАПАС]",
+    ["[ALT]"] = "[АЛЬТ.]",
+    ["[AS> "] = "[АП> ",
+    ["[AUTOCRAFT ACTIVE]"] = "[АВТОКРАФТ АКТИВЕН]",
+    ["[AUTOCRAFT] Crashed: "] = "[АВТОКРАФТ] Сбой: ",
+    ["[AUTOCRAFT] Restarting in 3s..."] = "[АВТОКРАФТ] Перезапуск через 3 с...",
+    ["[AUTOSTOCK PAUSED]"] = "[АВТОПОПОЛНЕНИЕ НА ПАУЗЕ]",
+    ["[CRAFT]"] = "[КРАФТ]",
+    ["[DEFRAGGING...]"] = "[ДЕФРАГМЕНТАЦИЯ...]",
+    ["[DEL]"] = "[УДАЛ.]",
+    ["[DONE]"] = "[ГОТОВО]",
+    ["[EDIT]"] = "[ИЗМ.]",
+    ["[FLUID]"] = "[ЖИДКОСТЬ]",
+    ["[FLUID]  "] = "[ЖИДКОСТЬ]  ",
+    ["[MANUAL CRAFTING...]"] = "[РУЧНОЙ КРАФТ...]",
+    ["[OFFLINE]"] = "[НЕ В СЕТИ]",
+    ["[PAUSE]"] = "[ПАУЗА]",
+    ["[PRIMARY]"] = "[ОСНОВНОЙ]",
+    ["[PRIMARY] "] = "[ОСНОВНОЙ] ",
+    ["[REQ]"] = "[ЗАПР.]",
+    ["[RESCANNING...]"] = "[ПЕРЕСКАНИРОВАНИЕ...]",
+    ["[RUN]  "] = "[ПУСК]  ",
+    ["[STORAGE]"] = "[ХРАНИЛИЩЕ]",
+    ["[SURE?]"] = "[ТОЧНО?]",
+    ["[SYS IDLE]"] = "[СИСТЕМА ОЖИДАЕТ]",
+    ["[TOP]"] = "[ВВЕРХ]",
+    ["[TRAIN BOX]"] = "[КОНТЕЙНЕР ПОЕЗДА]",
+    ["[UNPAIR ALL]"] = "[ОТВЯЗАТЬ ВСЕ]",
+    ["[YES]"] = "[ДА]",
+    ["[parallel craft]"] = "[параллельный крафт]",
+    ["add condition"] = "добавить условие",
+    ["machines"] = "механизмы",
+    ["no groups"] = "нет групп",
+    ["ok (0 moved)"] = "ок (перемещено 0)",
+    ["s remaining)"] = " с осталось)",
+    ["scheduling..."] = "планирование...",
+    ["then press SCAN."] = "затем нажмите СКАНИРОВАТЬ.",
+    ["top = higher priority"] = "выше = выше приоритет",
+    ["turtles"] = "черепахи",
+    ["x parallel]"] = "x параллельно]",
+    ["x parallel] "] = "x параллельно] ",
+    ["~ NEED RAW"] = "~ НУЖНО СЫРЬЁ",
+}
+local UI_PATTERNS = {
+    {"^Scanned (%d+) types %((%d+) pcs%) | Ready: (%d+)/(%d+)$", "Сканировано %1 типов (%2 шт.) | Готово: %3/%4"},
+    {"^Exported (%d+) pcs %((%d+) types%) -> (.+)$", "Экспортировано %1 шт. (%2 типов) -> %3"},
+    {"^Added (%d+) project items to Craft Queue!$", "Добавлено %1 позиций проекта в очередь крафта!"},
+    {"^Crafting %((%d+)/(%d+)%): (.+)%.%.%.$", "Крафт (%1/%2): %3..."},
+    {"^Batch done: (%d+) crafted, (%d+) failed | Ready: (%d+)/(%d+)$", "Готово: создано %1, ошибок %2 | Готово: %3/%4"},
+    {"^Step (%d+)/(%d+)$", "Шаг %1/%2"},
+    {"^Sub%-task (%d+)/(%d+)$", "Подзадача %1/%2"},
+    {"^Progress: (%d+) / (%d+)$", "Прогресс: %1 / %2"},
+    {"^Page (%d+)/(%d+)$", "Страница %1/%2"},
+    {"^Page (%d+) of (%d+)$", "Страница %1 из %2"},
+    {"^ PAGE (%d+) OF (%d+) $", " СТРАНИЦА %1 ИЗ %2 "},
+    {"^ Page (%d+)/(%d+) $", " Страница %1/%2 "},
+    {"^Used: (%d+)/(%d+) %((%d+) free%)$", "Занято: %1/%2 (%3 свободно)"},
+    {"^Need (%d+) mB (.+), have (%d+)$", "Нужно %1 mB %2, есть %3"},
+    {"^Need (%d+)x (.+), have (%d+)$", "Нужно %1x %2, есть %3"},
+    {"^Need (%d+)x (.+) %(have (%d+)%)$", "Нужно %1x %2 (есть %3)"},
+    {"^Tool deficit: (.+) %(missing (%d+)x%)$", "Дефицит инструмента: %1 (не хватает %2x)"},
+    {"^Tank: (%d+)/(%d+) | Vaults: (%d+) | Types: (%d+) | Total: (%d+)$", "Резервуар: %1/%2 | Хранилища: %3 | Типы: %4 | Всего: %5"},
+    {"^Vaults: (%d+) | Types: (%d+) | Total: (%d+)$", "Хранилища: %1 | Типы: %2 | Всего: %3"},
+    {"^Indexed (%d+) vaults%. Cleaned: (.+)$", "Проиндексировано %1 хранилищ. Очищено: %2"},
+    {"^Indexed (%d+) vaults %((%d+) total items%)$", "Проиндексировано %1 хранилищ (всего %2 предметов)"},
+    {"^(%d+) step%s? %(tap ITEM/TOOL to toggle%)$", "%1 действий (ПРЕДМЕТ/ИНСТРУМЕНТ переключается нажатием)"},
+    {"^(%d+) recipes?, (%d+) byproducts?$", "%1 рецептов, %2 побочных продуктов"},
+    {"^ %s*%[%s*%]%s+(%d+) machines$", " %1 механизмов"},
+    {"^CRAFT QUEUE %((%d+)%)$", "ОЧЕРЕДЬ КРАФТА (%1)"},
+    {"^ CHECKLIST %((%d+)%) $", " СПИСОК (%1) "},
+    {"^ NO RECIPE %((%d+)%) $", " НЕТ РЕЦЕПТА (%1) "},
+    {"^ RAW DEFICIT %((%d+)%) $", " ДЕФИЦИТ СЫРЬЯ (%1) "},
+    {"^ CRAFT QUEUE %((%d+)%) $", " ОЧЕРЕДЬ КРАФТА (%1) "},
+    {"^Affects (%d+) recipes!$", "Затрагивает %1 рецептов!"},
+    {"^Unloaded (%d+) items from train box$", "Выгружено %1 предметов из контейнера поезда"},
+    {"^Delivered (%d+) to train box%.$", "Доставлено %1 в контейнер поезда."},
+    {"^Running all (%d+) queued craft%(s%)$", "Запуск %1 крафтов из очереди"},
+    {"^Pairing: ACTIVE %((%d+)s remaining%)$", "Сопряжение: АКТИВНО (%1 с осталось)"},
+    {"^ (%d+)/(%d+) $", " %1/%2 "},
+}
+local UI_PREFIXES = {
+    {"ERR: ", "ОШИБКА: "},
+    {"Crafted: ", "Создано: "},
+    {"FAIL ", "ОШИБКА "},
+    {"Target: ", "Цель: "},
+    {"Testing: ", "Проверка: "},
+    {"Busy: ", "Занято: "},
+    {"Machine: ", "Механизм: "},
+    {"Recipe:  ", "Рецепт:  "},
+    {"Made: ", "Создано: "},
+    {"Stock: ", "На складе: "},
+    {"Queued: ", "В очереди: "},
+    {"Saved: ", "Сохранено: "},
+    {"Alt added: ", "Альтернатива добавлена: "},
+    {"Editing ", "Редактирование "},
+    {"Unloaded ", "Выгружено "},
+    {"Delivered ", "Доставлено "},
+    {"Missing item: ", "Не хватает предмета: "},
+    {"Missing tool: ", "Не хватает инструмента: "},
+    {"Missing base item: ", "Не хватает основного предмета: "},
+    {"Machine not found: ", "Механизм не найден: "},
+    {"Required for: ", "Требуется для: "},
+    {"Craft aborted: ", "Крафт прерван: "},
+}
+local function uiTextWidth(text)
+    local count = 0
+    for _ in tostring(text or ""):gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+        count = count + 1
+    end
+    return count
+end
+
+function translateUI(text)
+    if type(text) ~= "string" then return text end
+    local translated = UI_TRANSLATIONS[text]
+    if translated then return translated end
+    for _, rule in ipairs(UI_PATTERNS) do
+        local translatedText, replacements = text:gsub(rule[1], rule[2], 1)
+        if replacements > 0 then return translatedText end
+    end
+    for _, prefix in ipairs(UI_PREFIXES) do
+        if text:sub(1, #prefix[1]) == prefix[1] then
+            return prefix[2] .. text:sub(#prefix[1] + 1)
+        end
+    end
+    return text
+end
+
+
+-- Strings added with the barrel picker and multi-input inventories.
+UI_TRANSLATIONS[" SELECT ACTION ITEM FROM BARREL "] = " ВЫБОР ПРЕДМЕТА ДЕЙСТВИЯ ИЗ БОЧКИ "
+UI_TRANSLATIONS[" SELECT RESULT ITEM FROM BARREL "] = " ВЫБОР РЕЗУЛЬТАТА ИЗ БОЧКИ "
+UI_TRANSLATIONS[" [ REFRESH ] "] = " [ ОБНОВИТЬ ] "
+UI_TRANSLATIONS["Assign a barrel with [T.BOX] in NETWORK."] = "Назначьте бочку кнопкой [БОЧКА] во вкладке СЕТЬ."
+UI_TRANSLATIONS["Barrel is empty. Put the desired item inside."] = "Бочка пуста. Положите внутрь нужный предмет."
+UI_TRANSLATIONS["Failed to read the assigned barrel."] = "Не удалось прочитать назначенную бочку."
+UI_TRANSLATIONS["The assigned barrel cannot be read."] = "Назначенная бочка не поддерживает чтение."
+UI_TRANSLATIONS["The assigned barrel is offline."] = "Назначенная бочка недоступна."
+UI_TRANSLATIONS["[BUF] "] = "[БУФ] "
+UI_TRANSLATIONS["[MAIN] "] = "[ГЛАВ] "
+UI_TRANSLATIONS["[VAULT] "] = "[ХРАН] "
+UI_TRANSLATIONS["[T.BOX] "] = "[БОЧКА] "
+UI_TRANSLATIONS["[TURTLE] "] = "[ЧЕРЕП] "
+UI_TRANSLATIONS["[SUF] "] = "[МЕТКА] "
+UI_TRANSLATIONS["[TNK] "] = "[РЕЗ] "
+UI_TRANSLATIONS["[PROJ] "] = "[ПРОЕКТ] "
+UI_TRANSLATIONS["[IN]"] = "[ВХОД]"
+
 function drawText(x, y, text, fg, bg)
-_bufWrite(x, y, text, fg or colors.white, bg or colors.black)
+_bufWrite(x, y, T(translateUI(text)), fg or colors.white, bg or colors.black)
 end
 function drawProgressBar(x, y, width, current, max, bgColor)
 bgColor = bgColor or colors.black
@@ -3827,14 +4596,14 @@ drawText(x + width + 1, y, string.format("%d%%", math.floor(percent * 100)), col
 end
 function timedRead(timeout, initial)
 local buf = initial or ""
-if buf ~= " more" then term.write(buf) end
+if buf ~= " more" then term.write(T(buf)) end
 local timer = os.startTimer(timeout)
 while true do
 local ev, a = os.pullEvent()
 if ev == "char" then
 if timer then os.cancelTimer(timer); timer = nil end
 buf = buf .. a
-term.write(a)
+term.write(T(a))
 elseif ev == "key" then
 if a == keys.enter or a == keys.numPadEnter then
 if timer then os.cancelTimer(timer) end
@@ -8822,14 +9591,16 @@ runMgmtTransfers = function()
     return totalMoved
 end
 function drawTabButton(x, y, name, activeTab, zones)
+local label = translateUI(name)
+local labelWidth = uiTextWidth(label)
 if name == activeTab then
-drawText(x, y, " " .. name .. " ", colors.white, colors.gray)
-drawText(x, y + 1, string.rep("-", #name + 2), colors.lime, colors.black)
+drawText(x, y, " " .. label .. " ", colors.white, colors.gray)
+drawText(x, y + 1, string.rep("-", labelWidth + 2), colors.lime, colors.black)
 else
-drawText(x, y, " " .. name .. " ", colors.gray, colors.black)
+drawText(x, y, " " .. label .. " ", colors.gray, colors.black)
 end
-table.insert(zones, {id="switch_tab", arg=name, x1=x, x2=x + #name + 1, y=y})
-return x + #name + 3
+table.insert(zones, {id="switch_tab", arg=name, x1=x, x2=x + labelWidth + 1, y=y})
+return x + labelWidth + 3
 end
 function drawMgmtCondRow(pX, pW, ruleRowY, rule, ri2, touchZones)
 local cond = rule.condition
@@ -11520,7 +12291,7 @@ function _diB13(w, h, touchZones)
         drawText(math.max(2, math.floor((w - #emptyMsg) / 2) + 1), startRowY + 2, emptyMsg, colors.yellow, colors.black)
     end
 
-    local btnX = math.max(2, w - 61)
+    local btnX = math.max(2, w - 64)
     local nameWidth = math.max(1, btnX - 3)
     local function fitNetworkName(name)
         if #name <= nameWidth then return name end
@@ -11553,43 +12324,43 @@ function _diB13(w, h, touchZones)
         -- 3. [VAULT] (Auxiliary storage)
         local isStorage = Config.storages and Config.storages[p]
         drawText(btnX + 13, rowY, "[VAULT] ", isStorage and colors.black or inactiveFg, isStorage and colors.lime or rowBg)
-        table.insert(touchZones, {id="toggle_storage", arg=p, x1=btnX+13, x2=btnX+20, y=rowY})
+        table.insert(touchZones, {id="toggle_storage", arg=p, x1=btnX+13, x2=btnX+19, y=rowY})
 
         -- 4. [T.BOX] (Train Box)
         local isTBox = (Config.train_box == p)
-        drawText(btnX + 21, rowY, "[T.BOX] ", isTBox and colors.black or inactiveFg, isTBox and colors.orange or rowBg)
-        table.insert(touchZones, {id="set_train_box", arg=p, x1=btnX+21, x2=btnX+28, y=rowY})
+        drawText(btnX + 20, rowY, "[T.BOX] ", isTBox and colors.black or inactiveFg, isTBox and colors.orange or rowBg)
+        table.insert(touchZones, {id="set_train_box", arg=p, x1=btnX+20, x2=btnX+27, y=rowY})
 
         -- 5. [TURTLE]
         local isTurtle = Config.turtles and Config.turtles[p]
-        drawText(btnX + 29, rowY, "[TURTLE] ", isTurtle and colors.black or inactiveFg, isTurtle and colors.cyan or rowBg)
-        table.insert(touchZones, {id="set_turtle", arg=p, x1=btnX+29, x2=btnX+37, y=rowY})
+        drawText(btnX + 28, rowY, "[TURTLE] ", isTurtle and colors.black or inactiveFg, isTurtle and colors.cyan or rowBg)
+        table.insert(touchZones, {id="set_turtle", arg=p, x1=btnX+28, x2=btnX+35, y=rowY})
 
         -- 6. [SUF] (Suffix / Name)
         local hasLabel = MachineLabels[p] and MachineLabels[p] ~= ""
-        drawText(btnX + 38, rowY, "[SUF] ", hasLabel and colors.black or inactiveFg, hasLabel and colors.lime or rowBg)
-        table.insert(touchZones, {id="machine_label", arg=p, x1=btnX+38, x2=btnX+43, y=rowY})
+        drawText(btnX + 36, rowY, "[SUF] ", hasLabel and colors.black or inactiveFg, hasLabel and colors.lime or rowBg)
+        table.insert(touchZones, {id="machine_label", arg=p, x1=btnX+36, x2=btnX+42, y=rowY})
 
         -- 7. [TNK] (Fluid tank)
         local isFluidTank = Config.fluid_tanks and Config.fluid_tanks[p]
         local tankObj = peripheral.wrap(p)
         if tankObj and tankObj.tanks ~= nil then
-            drawText(btnX + 44, rowY, "[TNK] ", isFluidTank and colors.black or inactiveFg, isFluidTank and colors.lime or rowBg)
-            table.insert(touchZones, {id="toggle_fluid_tank", arg=p, x1=btnX+44, x2=btnX+49, y=rowY})
+            drawText(btnX + 43, rowY, "[TNK] ", isFluidTank and colors.black or inactiveFg, isFluidTank and colors.lime or rowBg)
+            table.insert(touchZones, {id="toggle_fluid_tank", arg=p, x1=btnX+43, x2=btnX+48, y=rowY})
         end
 
         -- 8. [PROJ] (Dedicated Create Clipboard chest)
         local isProjectChest = (Config.project_chest == p)
         if tankObj and tankObj.list and tankObj.getItemDetail then
-            drawText(btnX + 50, rowY, "[PROJ] ", isProjectChest and colors.black or inactiveFg, isProjectChest and colors.yellow or rowBg)
-            table.insert(touchZones, {id="set_project_chest", arg=p, x1=btnX+50, x2=btnX+56, y=rowY})
+            drawText(btnX + 49, rowY, "[PROJ] ", isProjectChest and colors.black or inactiveFg, isProjectChest and colors.yellow or rowBg)
+            table.insert(touchZones, {id="set_project_chest", arg=p, x1=btnX+49, x2=btnX+57, y=rowY})
         end
 
         -- 9. [IN] (Automatically empty this inventory into MAIN)
         local isInputChest = Config.input_chests and Config.input_chests[p]
         if (tankObj and tankObj.list and tankObj.pushItems) or isInputChest then
-            drawText(btnX + 57, rowY, "[IN]", isInputChest and colors.black or inactiveFg, isInputChest and colors.orange or rowBg)
-            table.insert(touchZones, {id="toggle_input_chest", arg=p, x1=btnX+57, x2=btnX+60, y=rowY})
+            drawText(btnX + 58, rowY, "[IN]", isInputChest and colors.black or inactiveFg, isInputChest and colors.orange or rowBg)
+            table.insert(touchZones, {id="toggle_input_chest", arg=p, x1=btnX+58, x2=btnX+63, y=rowY})
         end
 
         rowY = rowY + 1
@@ -14258,9 +15029,9 @@ idleTimer   = os.startTimer(autostockIdleSecs)
 while true do
 local touchZones = drawInterface()
 term.clear() term.setCursorPos(1,1)
-print("==========================================")
-print(" STATUS: MONITOR DISPLAY ACTIVE (NX-UI)   ")
-print("==========================================")
+print(T("=========================================="))
+print(T(" СТАТУС: МОНИТОР АКТИВЕН (NX-UI) "))
+print(T("=========================================="))
 local searchTabActive = (currentTab == "RECIPES" or currentTab == "STOCK")
 or (currentTab == "FLUID" and (fluidSubTab == "FLUID" or fluidSubTab == "FITEM") and not fluidRecipePicker and not fluidCraftWaitFluid)
 if searchTabActive then
@@ -14268,12 +15039,12 @@ local sf, label
 if currentTab == "RECIPES" then sf, label = searchFilter, "RECIPES"
 elseif currentTab == "STOCK" then sf, label = stockSearchFilter, "STOCK"
 else sf, label = fluidSearchFilter, "FLUID" end
-print(" more")
-print(" [" .. label .. " SEARCH]")
+print(T(" ещё"))
+print(T(" [" .. translateUI(label) .. ": ПОИСК]"))
 if sf == "" then
-print(" > _  (type to search)")
+print(T(" > _  (введите запрос)"))
 else
-print(" > " .. sf .. "_")
+print(T(" > " .. sf .. "_"))
 end
 end
 local event, param1, param2, param3
@@ -14538,7 +15309,7 @@ elseif zone.id == "fluid_trigger_search" then
 searchInputActive = true
 drawInterface()
 term.clear() term.setCursorPos(1, 1)
-write("Enter fluid search: ")
+write(T("Поиск жидкости: "))
 local srInput = timedRead(5)
 searchInputActive = false
 if srInput ~= nil then fluidSearchFilter = srInput end
@@ -15309,7 +16080,7 @@ elseif zone.id == "trigger_search" then
 searchInputActive = true
 drawInterface()
 term.clear() term.setCursorPos(1,1)
-write("Enter Search query: ")
+write(T("Введите поисковый запрос: "))
 local srInput = timedRead(5)
 searchInputActive = false
 if srInput ~= nil and srInput ~= "" then searchFilter = srInput end
@@ -15328,7 +16099,7 @@ elseif zone.id == "stock_search" then
 stockSearchInputActive = true
 drawInterface()
 term.clear() term.setCursorPos(1,1)
-write("Stock search: ")
+write(T("Поиск на складе: "))
 local stInput = timedRead(5)
 stockSearchInputActive = false
 if stInput ~= nil and stInput ~= "" then stockSearchFilter = stInput end
@@ -15544,7 +16315,7 @@ elseif zone.id == "qty_type" then
 qtyTypeActive = true
 drawInterface()
 term.clear(); term.setCursorPos(1, 1)
-write("Enter quantity: ")
+write(T("Введите количество: "))
 local input = timedRead(30)
 qtyTypeActive = false
 local num = tonumber(input)
@@ -15993,17 +16764,17 @@ if act then
 drawInterface()
 term.clear(); term.setCursorPos(1,1)
 if act.type == "item" and act.is_tool then
-write("Whole tool durability: ")
+write(T("Полная прочность инструмента: "))
 local inp = read()
 local n = tonumber(inp)
 if n and n >= 1 then act.durability = math.floor(n) end
 elseif act.type == "item" then
-write("Action count: ")
+write(T("Количество действий: "))
 local inp = read()
 local n = tonumber(inp)
 if n and n >= 1 then act.count = math.floor(n) end
 else
-write("Fluid amount (mB): ")
+write(T("Количество жидкости (mB): "))
 local inp = read()
 local n = tonumber(inp)
 if n and n >= 1 then act.amount = math.floor(n) end
@@ -16046,7 +16817,7 @@ local res = compositeDraft.results and compositeDraft.results[zone.arg]
 if res then
 drawInterface()
 term.clear(); term.setCursorPos(1,1)
-write("Output count per craft: ")
+write(T("Количество результатов за крафт: "))
 local inp = read()
 local n = tonumber(inp)
 if n and n >= 1 then res.count = math.floor(n) end
@@ -16056,7 +16827,7 @@ local res = compositeDraft.results and compositeDraft.results[zone.arg]
 if res then
 drawInterface()
 term.clear(); term.setCursorPos(1,1)
-write("Drop chance % (1-100, or '-' to reset): ")
+write(T("Шанс выпадения % (1-100, '-' для сброса): "))
 local inp = read()
 if inp then
 local trimmed = inp:match("^%s*(.-)%s*$")
@@ -16086,15 +16857,15 @@ elseif zone.id == "comp_res_base_num" then
 drawInterface()
 term.clear(); term.setCursorPos(1,1)
 if compositeDraft.baseIngredients and #compositeDraft.baseIngredients > 1 then
-    print("Base ingredients per operation:")
+    print(T("Основные ингредиенты за операцию:"))
     for bi_i, bi in ipairs(compositeDraft.baseIngredients) do
-        print(string.format("[%d] %s x%d", bi_i, getItemDisplayName(bi.item), bi.count or 1))
+        print(T(string.format("[%d] %s x%d", bi_i, getItemDisplayName(bi.item), bi.count or 1)))
     end
-    print("Select ingredient (1-" .. #compositeDraft.baseIngredients .. "), or press Enter for #1:")
+    print(T("Выберите ингредиент (1-" .. #compositeDraft.baseIngredients .. ") или Enter для №1:"))
     local sel = read()
     local selIdx = tonumber(sel) or 1
     if selIdx >= 1 and selIdx <= #compositeDraft.baseIngredients then
-        write("Enter count for " .. getItemDisplayName(compositeDraft.baseIngredients[selIdx].item) .. ": ")
+        write(T("Количество для " .. getItemDisplayName(compositeDraft.baseIngredients[selIdx].item) .. ": "))
         local n = tonumber(read())
         if n and n >= 1 then
             compositeDraft.baseIngredients[selIdx].count = math.floor(n)
@@ -16102,7 +16873,7 @@ if compositeDraft.baseIngredients and #compositeDraft.baseIngredients > 1 then
         end
     end
 else
-    write("Base ingredient count per craft: ")
+    write(T("Количество основного ингредиента за крафт: "))
     local inp = read()
     local n = tonumber(inp)
     if n and n >= 1 then
@@ -16342,7 +17113,7 @@ if compositePopup then
 compositePopup.searchActive = true
 drawInterface()
 term.clear() term.setCursorPos(1, 1)
-write("Search item: ")
+write(T("Поиск предмета: "))
 local srInput = timedRead(5)
 compositePopup.searchActive = false
 if srInput ~= nil then
@@ -16515,7 +17286,7 @@ local cur = MachineLabels[mName] or ""
 drawInterface()
 term.clear(); term.setCursorPos(1,1)
 local mId = mName:match(":(.+)$") or mName
-write(mId .. " label (Enter=clear): ")
+write(T(mId .. " метка (Enter=очистить): "))
 local lbl = timedRead(15)
 if lbl ~= nil then
 if lbl == "" then
@@ -16563,7 +17334,7 @@ elseif zone.id == "cgrp_popup_name" then
 if custGrpPopup then
 drawInterface()
 term.clear(); term.setCursorPos(1,1)
-write("Group name: ")
+write(T("Имя группы: "))
 local inp = read()
 if inp and inp ~= "" then custGrpPopup.name = inp end
 end
@@ -16668,7 +17439,7 @@ elseif zone.id == "mgmt_edit_name" then
 if mgmtPopup then
 drawInterface()
 term.clear(); term.setCursorPos(1,1)
-write("Group name: ")
+write(T("Имя группы: "))
 local inp = read()
 if inp and inp ~= "" then mgmtPopup.name = inp end
 end
@@ -16679,7 +17450,7 @@ local rule = mgmtPopup.rules[ri3t]
 if rule then
 drawInterface()
 term.clear(); term.setCursorPos(1,1)
-write("Amount for " .. (rule.item:match(":(.+)$") or rule.item) .. ": ")
+write(T("Количество для " .. (rule.item:match(":(.+)$") or rule.item) .. ": "))
 local inp = read()
 local n = tonumber(inp)
 if n and n >= 1 then rule.amount = math.floor(n) end
@@ -16837,7 +17608,7 @@ if rule and rule.condition then
 local cName = rule.condition.item:match(":(.+)$") or rule.condition.item
 drawInterface()
 term.clear(); term.setCursorPos(1,1)
-write("IF value for " .. cName .. ": ")
+write(T("Значение ЕСЛИ для " .. cName .. ": "))
 local inp = read()
 local n = tonumber(inp)
 if n and n >= 1 then rule.condition.value = math.floor(n) end
@@ -16904,7 +17675,7 @@ elseif zone.id == "mgmt_search_focus" then
 mgmtItemSearchActive = true
 drawInterface()
 term.clear() term.setCursorPos(1,1)
-write("> ")
+write(T("> "))
 local srInput = timedRead(5)
 mgmtItemSearchActive = false
 if srInput ~= nil then
@@ -17042,8 +17813,8 @@ end
 while true do
 local ok, err = pcall(runMain)
 if not ok then
-print("[AUTOCRAFT] Crashed: " .. tostring(err))
-print("[AUTOCRAFT] Restarting in 3s...")
+print(T("[АВТОКРАФТ] Сбой: " .. tostring(err)))
+print(T("[АВТОКРАФТ] Перезапуск через 3 с..."))
 sleep(3)
 end
 end
