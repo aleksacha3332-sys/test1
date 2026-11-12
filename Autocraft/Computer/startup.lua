@@ -25,6 +25,10 @@ local Config = {
     fluid_tanks = {},
     train_box = nil,
     project_chest = nil,
+    crafter_layout = {
+        width = 3, height = 3, cells = {},
+        redstone_side = "top", pulse_time = 0.3, timeout = 120
+    },
     turtles = {},
     autostock_paused = false,
     paired_remotes = {}
@@ -872,6 +876,10 @@ compositeDraft = {
     editingAltIdx = nil
 }
 compositePopup = nil
+crafterEditor = {
+    mode = "layout", selectedCell = nil, draft = nil,
+    pageX = 1, pageY = 1, recipePage = 1
+}
 checkTimer = nil
 mgmtPage      = 1
 mgmtPopup     = nil
@@ -992,6 +1000,18 @@ end
 if not Config.main_vaults then Config.main_vaults = {} end
 if not Config.storages then Config.storages = {} end
 if not Config.input_chests then Config.input_chests = {} end
+if type(Config.crafter_layout) ~= "table" then
+    Config.crafter_layout = {
+        width = 3, height = 3, cells = {},
+        redstone_side = "top", pulse_time = 0.3, timeout = 120
+    }
+end
+if type(Config.crafter_layout.cells) ~= "table" then Config.crafter_layout.cells = {} end
+Config.crafter_layout.width = math.max(1, math.min(15, math.floor(tonumber(Config.crafter_layout.width) or 3)))
+Config.crafter_layout.height = math.max(1, math.min(15, math.floor(tonumber(Config.crafter_layout.height) or 3)))
+if not Config.crafter_layout.redstone_side then Config.crafter_layout.redstone_side = "top" end
+if not Config.crafter_layout.pulse_time then Config.crafter_layout.pulse_time = 0.3 end
+if not Config.crafter_layout.timeout then Config.crafter_layout.timeout = 120 end
 if not Config.fluid_tanks then Config.fluid_tanks = {} end
 if not Config.turtles then Config.turtles = {} end
 if Config.turtle and Config.turtle ~= "" then
@@ -3560,6 +3580,17 @@ if enabled and peripheral.wrap(tName) then return true, nil end
 end
 return false, "turtle"
 end
+if mType == "crafter" then
+local layout = getCrafterLayout()
+local cells = getCrafterCells(layout)
+if #cells == 0 then return false, "mechanical_crafters" end
+for _, cell in ipairs(cells) do
+if ExcludedMachines[cell.address] or not peripheral.wrap(cell.address) then
+return false, cell.address
+end
+end
+return true, nil
+end
 if mType == "composite" then
 if getCompositeWorkstations then
 local sts = getCompositeWorkstations(recipe)
@@ -5915,6 +5946,7 @@ if step.fluid_craft then
 return fluidRecipeTokens(step.fluidRecipe)
 end
 if step.type == "turtle" then return { "TURTLE" } end
+if step.type == "crafter" then return { "MECHANICAL_CRAFTERS" } end
 if step.type == "composite" then
 local toks = {}
 local seen = {}
@@ -6891,6 +6923,305 @@ function executeCompositeStep(step, ctx, node, drawProgress, desc)
     if totalCollected >= totalExpected then return true end
     return false
 end
+local function crafterCollectInventory(periph, address, slot, amount, storages, targetItem, allowSub)
+    local remaining = math.max(0, tonumber(amount) or 0)
+    local targetMoved = 0
+    local totalMoved = 0
+    local detailName = nil
+    if periph.getItemDetail then
+        local okDetail, detail = pcall(periph.getItemDetail, slot)
+        if okDetail and detail then detailName = makeItemKey(detail.name, detail.nbt) end
+    end
+    for _, storageName in ipairs(storages or {}) do
+        if remaining <= 0 then break end
+        local okPush, moved = pcall(periph.pushItems, storageName, slot, remaining)
+        if okPush and type(moved) == "number" and moved > 0 then
+            remaining = remaining - moved
+            totalMoved = totalMoved + moved
+            if targetItem and detailName and itemMatchesOrGroup(detailName, targetItem, allowSub) then
+                targetMoved = targetMoved + moved
+            end
+        end
+    end
+    if remaining > 0 then
+        for _, storageName in ipairs(storages or {}) do
+            if remaining <= 0 then break end
+            local storage = peripheral.wrap(storageName)
+            if storage and storage.pullItems then
+                local okPull, moved = pcall(storage.pullItems, address, slot, remaining)
+                if okPull and type(moved) == "number" and moved > 0 then
+                    remaining = remaining - moved
+                    totalMoved = totalMoved + moved
+                    if targetItem and detailName and itemMatchesOrGroup(detailName, targetItem, allowSub) then
+                        targetMoved = targetMoved + moved
+                    end
+                end
+            end
+        end
+    end
+    return totalMoved, targetMoved, remaining
+end
+
+function executeCrafterStep(step, ctx, node, drawProgress, desc)
+    local layout = getCrafterLayout()
+    local cells = getCrafterCells(layout)
+    local side = layout.redstone_side
+    local totalOps = math.max(0, math.floor(tonumber(step.count) or 0))
+    local outputPerOp = math.max(1, math.floor(tonumber(step.output_count) or 1))
+    local totalExpected = totalOps * outputPerOp
+    local totalCollected = 0
+    local allowSub = (step.allow_group_sub ~= nil) and step.allow_group_sub or (not isWoodSpecificItem(step.item))
+    redstone.setOutput(side, false)
+
+    local function setError(title, lines)
+        redstone.setOutput(side, false)
+        craftErrorTitle = title
+        craftErrorLines = lines
+        logCraftError(title, lines)
+    end
+
+    local function fail(title, lines)
+        setError(title, lines)
+        for _, cell in ipairs(cells) do
+            local p = peripheral.wrap(cell.address)
+            if p and p.list and p.pushItems then
+                local okList, items = pcall(p.list)
+                if okList and type(items) == "table" then
+                    for slot, item in pairs(items) do
+                        if item and (item.count or 0) > 0 then
+                            crafterCollectInventory(p, cell.address, slot, item.count, ctx.sortedStorages)
+                        end
+                    end
+                end
+            end
+        end
+        invalidateStockCache()
+        ctx.active[node.idx] = nil
+        return false
+    end
+
+    if totalOps <= 0 then return true end
+    if #cells == 0 then
+        return fail("! СХЕМА КРАФТЕРОВ ПУСТА", {
+            "Не настроен ни один механический крафтер.",
+            "Откройте +РЕЦЕПТЫ -> КРАФТЕРЫ -> СХЕМА."
+        })
+    end
+    for _, cell in ipairs(cells) do
+        local p = peripheral.wrap(cell.address)
+        if not p or not p.list or not p.pushItems then
+            return fail("! КРАФТЕР НЕДОСТУПЕН", {
+                "Клетка " .. cell.x .. "," .. cell.y .. ": " .. cell.address,
+                "Подключите инвентарь крафтера к проводной сети."
+            })
+        end
+        craftUsedMachines[cell.address] = true
+    end
+
+    local requiredPerOp = {}
+    for i = 1, 225 do
+        local ing = step.ingredients and step.ingredients[i]
+        if ing and ing ~= "nil" then
+            local x = ((i - 1) % 15) + 1
+            local y = math.floor((i - 1) / 15) + 1
+            local address = layout.cells[crafterCellKey(x, y)]
+            if x > layout.width or y > layout.height or not address then
+                return fail("! СХЕМА КРАФТЕРОВ ИЗМЕНЕНА", {
+                    "В клетке рецепта " .. x .. "," .. y .. " не назначен крафтер.",
+                    "Восстановите клетку в разделе схемы крафтеров."
+                })
+            end
+            requiredPerOp[ing] = (requiredPerOp[ing] or 0) + 1
+        end
+    end
+    if not next(requiredPerOp) then
+        return fail("! ПУСТОЙ РЕЦЕПТ КРАФТЕРА", {"В рецепте нет ингредиентов: " .. tostring(step.item)})
+    end
+    for ing, perOp in pairs(requiredPerOp) do
+        ensureItemAvailable(ing, perOp * totalOps, allowSub)
+    end
+
+    local function clearAllCrafters()
+        for _, cell in ipairs(cells) do
+            local p = peripheral.wrap(cell.address)
+            local okList, items = pcall(p.list)
+            if not okList or type(items) ~= "table" then return false, cell end
+            for slot, item in pairs(items) do
+                if item and (item.count or 0) > 0 then
+                    local _, _, left = crafterCollectInventory(
+                        p, cell.address, slot, item.count, ctx.sortedStorages, step.item, allowSub)
+                    if left > 0 then return false, cell end
+                end
+            end
+        end
+        return true
+    end
+
+    local cleared, blockedCell = clearAllCrafters()
+    if not cleared then
+        return fail("! ВЫХОД КРАФТЕРА ЗАБЛОКИРОВАН", {
+            "Не удалось очистить клетку " .. blockedCell.x .. "," .. blockedCell.y .. ".",
+            "Проверьте свободное место на ГЛАВНОМ складе и подключение."
+        })
+    end
+
+    for op = 1, totalOps do
+        if cancelCrafting or ctx.failed then
+            return fail("! КРАФТ ОТМЕНЁН", {"Операция механических крафтеров отменена."})
+        end
+        drawProgress(node.idx, #ctx.plan, desc, (op - 1) * outputPerOp, totalExpected, step.item, 1)
+
+        for _, cell in ipairs(cells) do
+            local idx = crafterIngredientIndex(cell.x, cell.y)
+            local ing = step.ingredients and step.ingredients[idx]
+            if ing and ing ~= "nil" then
+                local moved = pushFromStorage(ing, 1, cell.address, 1, allowSub) or 0
+                if moved < 1 then
+                    return fail("! НУЖЕН РЕСУРС ДЛЯ КРАФТЕРА", {
+                        getItemDisplayName(ing) .. ": x1 missing",
+                        "Клетка назначения: " .. cell.x .. "," .. cell.y,
+                        "Импульс редстоуна не подавался."
+                    })
+                end
+            end
+        end
+
+        local verified = true
+        local verifyError = nil
+        for _, cell in ipairs(cells) do
+            local p = peripheral.wrap(cell.address)
+            local okList, items = pcall(p.list)
+            if not okList or type(items) ~= "table" then
+                verified = false
+                verifyError = "Не удалось прочитать клетку " .. cell.x .. "," .. cell.y
+                break
+            end
+            local idx = crafterIngredientIndex(cell.x, cell.y)
+            local expected = step.ingredients and step.ingredients[idx]
+            if not expected or expected == "nil" then expected = nil end
+            local first = items[1]
+            if expected then
+                if not first or (first.count or 0) < 1
+                or not itemMatchesOrGroup(first.name, expected, allowSub) then
+                    verified = false
+                    verifyError = "Неверный ингредиент в клетке " .. cell.x .. "," .. cell.y
+                    break
+                end
+                for slot, item in pairs(items) do
+                    if slot ~= 1 and item and (item.count or 0) > 0 then
+                        verified = false
+                        verifyError = "Посторонние предметы в клетке " .. cell.x .. "," .. cell.y
+                        break
+                    end
+                end
+            elseif next(items) ~= nil then
+                verified = false
+                verifyError = "Клетка должна быть пустой: " .. cell.x .. "," .. cell.y
+                break
+            end
+            if not verified then break end
+        end
+        if not verified then
+            return fail("! ОШИБКА ПРОВЕРКИ КРАФТЕРА", {
+                verifyError or "Проверка раскладки ресурсов не пройдена.",
+                "Импульс редстоуна не подавался."
+            })
+        end
+
+        drawProgress(node.idx, #ctx.plan, "Импульс редстоуна: " .. desc,
+            (op - 1) * outputPerOp, totalExpected, step.item, 1)
+        redstone.setOutput(side, true)
+        sleepCheckCancel(math.max(0.05, layout.pulse_time))
+        redstone.setOutput(side, false)
+
+        local elapsed = 0
+        local opCollected = 0
+        local completed = false
+        while elapsed < layout.timeout and not cancelCrafting and not ctx.failed do
+            sleepCheckCancel(0.25)
+            elapsed = elapsed + 0.25
+            local inputsClear = true
+            local readOk = true
+            for _, cell in ipairs(cells) do
+                local p = peripheral.wrap(cell.address)
+                local okList, items = pcall(p.list)
+                if not okList or type(items) ~= "table" then
+                    readOk = false
+                    break
+                end
+                local idx = crafterIngredientIndex(cell.x, cell.y)
+                local expected = step.ingredients and step.ingredients[idx]
+                if expected and expected ~= "nil" then
+                    for _, item in pairs(items) do
+                        if item and (item.count or 0) > 0
+                        and itemMatchesOrGroup(item.name, expected, allowSub) then
+                            inputsClear = false
+                            break
+                        end
+                    end
+                    if not inputsClear then break end
+                end
+            end
+            if not readOk then
+                return fail("! КРАФТЕР НЕДОСТУПЕН", {"Крафтер отключился во время крафта."})
+            end
+            if inputsClear then
+                for _, cell in ipairs(cells) do
+                    local p = peripheral.wrap(cell.address)
+                    local okList, items = pcall(p.list)
+                    if okList and type(items) == "table" then
+                        for slot, item in pairs(items) do
+                            if item and (item.count or 0) > 0 then
+                                local _, targetMoved, left = crafterCollectInventory(
+                                    p, cell.address, slot, item.count, ctx.sortedStorages,
+                                    step.item, allowSub)
+                                opCollected = opCollected + targetMoved
+                                if left > 0 then
+                                    return fail("! ВЫХОД КРАФТЕРА ЗАБЛОКИРОВАН", {
+                                        "Недостаточно свободного места на ГЛАВНОМ складе.",
+                                        "Результат остался в клетке " .. cell.x .. "," .. cell.y .. "."
+                                    })
+                                end
+                            end
+                        end
+                    end
+                end
+                totalCollected = totalCollected + opCollected
+                opCollected = 0
+                drawProgress(node.idx, #ctx.plan, desc, totalCollected, totalExpected, step.item, 1)
+                invalidateStockCache()
+                if totalCollected >= op * outputPerOp then
+                    completed = true
+                    break
+                end
+            end
+        end
+        if not completed then
+            if cancelCrafting or ctx.failed then
+                return fail("! КРАФТ ОТМЕНЁН", {"Операция механических крафтеров отменена."})
+            end
+            return fail("! ТАЙМ-АУТ КРАФТЕРА", {
+                "Крафт не завершился за " .. tostring(layout.timeout) .. " s.",
+                "Проверьте форму, соединение крафтеров и сторону редстоуна.",
+                "Получено: " .. tostring(totalCollected) .. " / " .. tostring(totalExpected)
+            })
+        end
+        local finalClear, finalBlocked = clearAllCrafters()
+        if not finalClear then
+            return fail("! ВЫХОД КРАФТЕРА ЗАБЛОКИРОВАН", {
+                "Cannot clear cell " .. finalBlocked.x .. "," .. finalBlocked.y .. ".",
+                "Следующий крафт не был запущен."
+            })
+        end
+        invalidateStockCache()
+    end
+    redstone.setOutput(side, false)
+    ctx.active[node.idx] = nil
+    flushCraftBuffer()
+    invalidateStockCache()
+    return totalCollected >= totalExpected
+end
+
 function executeStep(step, ctx, node)
 local sortedStorages = ctx.sortedStorages
 local provSrc        = providerSources()
@@ -6937,6 +7268,8 @@ return false
 end
 elseif step.type == "composite" then
 return executeCompositeStep(step, ctx, node, drawProgress, desc)
+elseif step.type == "crafter" then
+return executeCrafterStep(step, ctx, node, drawProgress, desc)
 elseif step.type == "turtle" then
             local turtleSlots = {1, 2, 3, 5, 6, 7, 9, 10, 11}
             local turtlePool = {}
@@ -9982,6 +10315,342 @@ local function drawCompositeActionRow(actIdx, act, actRowY, devW, itemW, touchZo
     table.insert(touchZones, {id="comp_act_del", arg=actIdx, x1=cX, x2=cX+2, y=actRowY})
 end
 
+function crafterCellKey(x, y)
+    return tostring(x) .. "," .. tostring(y)
+end
+
+function crafterIngredientIndex(x, y)
+    return (y - 1) * 15 + x
+end
+
+function getCrafterLayout()
+    if type(Config.crafter_layout) ~= "table" then
+        Config.crafter_layout = {
+            width = 3, height = 3, cells = {},
+            redstone_side = "top", pulse_time = 0.3, timeout = 120
+        }
+    end
+    local layout = Config.crafter_layout
+    layout.width = math.max(1, math.min(15, math.floor(tonumber(layout.width) or 3)))
+    layout.height = math.max(1, math.min(15, math.floor(tonumber(layout.height) or 3)))
+    if type(layout.cells) ~= "table" then layout.cells = {} end
+    local validSides = {top=true, bottom=true, left=true, right=true, front=true, back=true}
+    if not validSides[layout.redstone_side] then layout.redstone_side = "top" end
+    layout.pulse_time = tonumber(layout.pulse_time) or 0.3
+    layout.timeout = math.max(5, tonumber(layout.timeout) or 120)
+    return layout
+end
+
+function getCrafterCells(layout)
+    layout = layout or getCrafterLayout()
+    local cells = {}
+    for key, address in pairs(layout.cells or {}) do
+        local x, y = tostring(key):match("^(%d+),(%d+)$")
+        x, y = tonumber(x), tonumber(y)
+        if x and y and x >= 1 and x <= layout.width and y >= 1 and y <= layout.height
+        and type(address) == "string" and address ~= "" then
+            cells[#cells + 1] = {x=x, y=y, key=crafterCellKey(x, y), address=address}
+        end
+    end
+    table.sort(cells, function(a, b)
+        if a.y ~= b.y then return a.y < b.y end
+        return a.x < b.x
+    end)
+    return cells
+end
+
+function newCrafterDraft()
+    local ingredients = {}
+    for i = 1, 225 do ingredients[i] = "nil" end
+    return {
+        result = nil, outputCount = 1, ingredients = ingredients,
+        editingItem = nil, editingAltIdx = nil
+    }
+end
+
+function loadCrafterDraft(itemName, recipe, altIdx)
+    local draft = newCrafterDraft()
+    draft.result = itemName
+    draft.outputCount = math.max(1, math.floor(tonumber(recipe.output_count) or 1))
+    draft.editingItem = itemName
+    draft.editingAltIdx = altIdx
+    for i = 1, 225 do
+        local ing = recipe.ingredients and recipe.ingredients[i]
+        if type(ing) == "string" and ing ~= "" and ing ~= "nil" then
+            draft.ingredients[i] = ing
+        end
+    end
+    crafterEditor.draft = draft
+    crafterEditor.mode = "recipe"
+    crafterEditor.selectedCell = nil
+    crafterEditor.pageX, crafterEditor.pageY = 1, 1
+    compositePopup = nil
+    recipeEditPopup = nil
+    craftSubTab = "CRAFTERS"
+    currentTab = "+RECIPES"
+end
+
+function getCrafterRecipeList()
+    local list = {}
+    for itemName, recipe in pairs(Recipes or {}) do
+        if type(recipe) == "table" and recipe.type == "crafter" then
+            list[#list + 1] = {item=itemName, recipe=recipe, altIdx=nil}
+        end
+    end
+    for itemName, alts in pairs(AltRecipes or {}) do
+        for altIdx, recipe in ipairs(alts or {}) do
+            if type(recipe) == "table" and recipe.type == "crafter" then
+                list[#list + 1] = {item=itemName, recipe=recipe, altIdx=altIdx}
+            end
+        end
+    end
+    table.sort(list, function(a, b)
+        local cmp = naturalSortCompare(getItemDisplayName(a.item), getItemDisplayName(b.item))
+        if getItemDisplayName(a.item) == getItemDisplayName(b.item) then
+            return (a.altIdx or 0) < (b.altIdx or 0)
+        end
+        return cmp
+    end)
+    return list
+end
+
+function saveCrafterDraft()
+    local draft = crafterEditor.draft
+    if not draft or not draft.result then return "Сначала выберите результат из бочки." end
+    local layout = getCrafterLayout()
+    local hasIngredient = false
+    for i = 1, 225 do
+        local ing = draft.ingredients[i]
+        if ing and ing ~= "nil" then
+            local x = ((i - 1) % 15) + 1
+            local y = math.floor((i - 1) / 15) + 1
+            if x > layout.width or y > layout.height
+            or not layout.cells[crafterCellKey(x, y)] then
+                return "Ингредиент в клетке " .. x .. "," .. y .. " не имеет крафтера."
+            end
+            hasIngredient = true
+        end
+    end
+    if not hasIngredient then return "Разместите хотя бы один ингредиент." end
+    local ingredients = {}
+    for i = 1, 225 do ingredients[i] = draft.ingredients[i] or "nil" end
+    local recipe = {
+        type = "crafter",
+        machine_name = "mechanical_crafters",
+        method = "mechanical_crafters",
+        ingredients = ingredients,
+        output_count = math.max(1, math.floor(tonumber(draft.outputCount) or 1)),
+        grid_width = layout.width,
+        grid_height = layout.height
+    }
+    local oldItem, oldAlt = draft.editingItem, draft.editingAltIdx
+    if oldItem and oldItem == draft.result then
+        if oldAlt then
+            AltRecipes[oldItem] = AltRecipes[oldItem] or {}
+            AltRecipes[oldItem][oldAlt] = recipe
+        else
+            Recipes[oldItem] = recipe
+        end
+    else
+        if oldItem then
+            if oldAlt and AltRecipes[oldItem] then
+                table.remove(AltRecipes[oldItem], oldAlt)
+                if #AltRecipes[oldItem] == 0 then AltRecipes[oldItem] = nil end
+            elseif not oldAlt then
+                Recipes[oldItem] = nil
+                local oldAlts = AltRecipes[oldItem]
+                if oldAlts and #oldAlts > 0 then
+                    Recipes[oldItem] = table.remove(oldAlts, 1)
+                    if #oldAlts == 0 then AltRecipes[oldItem] = nil end
+                end
+            end
+        end
+        local existing = Recipes[draft.result]
+        if type(existing) == "table" then
+            AltRecipes[draft.result] = AltRecipes[draft.result] or {}
+            table.insert(AltRecipes[draft.result], recipe)
+            draft.editingAltIdx = #AltRecipes[draft.result]
+        else
+            Recipes[draft.result] = recipe
+            draft.editingAltIdx = nil
+        end
+        draft.editingItem = draft.result
+    end
+    saveData()
+    crafterEditor.draft = draft
+    return nil, "Рецепт сохранён: " .. getItemDisplayName(draft.result)
+end
+
+local function crafterButton(text, x, y, active, zones, id, arg, enabled)
+    local width = uiTextWidth(text)
+    local bg = active and colors.cyan or colors.gray
+    local fg = active and colors.black or colors.white
+    if enabled == false then fg, bg = colors.lightGray, colors.gray end
+    drawText(x, y, text, fg, bg)
+    if enabled ~= false and zones then
+        zones[#zones + 1] = {id=id, arg=arg, x1=x, x2=x+width-1, y=y}
+    end
+    return x + width + 1
+end
+
+local function drawCrafterGrid(layout, draft, gridY, w, h, touchZones)
+    local cellW = 2
+    local maxCols = math.max(1, math.min(layout.width, math.floor((w - 4) / cellW)))
+    local maxRows = math.max(1, math.min(layout.height, h - gridY - 6))
+    local totalXP = math.max(1, math.ceil(layout.width / maxCols))
+    local totalYP = math.max(1, math.ceil(layout.height / maxRows))
+    crafterEditor.pageX = math.max(1, math.min(totalXP, crafterEditor.pageX or 1))
+    crafterEditor.pageY = math.max(1, math.min(totalYP, crafterEditor.pageY or 1))
+    local firstX = (crafterEditor.pageX - 1) * maxCols + 1
+    local firstY = (crafterEditor.pageY - 1) * maxRows + 1
+    local lastX = math.min(layout.width, firstX + maxCols - 1)
+    local lastY = math.min(layout.height, firstY + maxRows - 1)
+    local gridW = (lastX - firstX + 1) * cellW
+    local gridX = math.max(2, math.floor((w - gridW) / 2) + 1)
+    for y = firstY, lastY do
+        for x = firstX, lastX do
+            local key = crafterCellKey(x, y)
+            local address = layout.cells[key]
+            local idx = crafterIngredientIndex(x, y)
+            local ing = draft and draft.ingredients[idx]
+            local symbol, fg, bg = "  ", colors.gray, colors.black
+            if draft then
+                if address then
+                    symbol = (ing and ing ~= "nil") and "##" or "[]"
+                    fg = (ing and ing ~= "nil") and colors.black or colors.lightGray
+                    bg = (ing and ing ~= "nil") and colors.lime or colors.gray
+                else
+                    symbol = "··"
+                    fg = colors.gray
+                end
+            else
+                symbol = address and "[]" or "··"
+                fg = address and colors.black or colors.gray
+                bg = address and colors.cyan or colors.black
+            end
+            if crafterEditor.selectedCell == key then bg = colors.orange; fg = colors.black end
+            local cx = gridX + (x - firstX) * cellW
+            local cy = gridY + (y - firstY)
+            drawText(cx, cy, symbol, fg, bg)
+            touchZones[#touchZones + 1] = {
+                id=draft and "crafter_recipe_cell" or "crafter_layout_cell",
+                arg=key, x1=cx, x2=cx+cellW-1, y=cy
+            }
+        end
+    end
+    if totalXP > 1 or totalYP > 1 then
+        local navY = gridY - 1
+        local nav = string.format("X %d/%d  Y %d/%d", crafterEditor.pageX, totalXP, crafterEditor.pageY, totalYP)
+        local nx = math.max(2, w - uiTextWidth(nav) - 10)
+        drawText(nx, navY, nav, colors.yellow)
+        crafterButton("[<]", w - 9, navY, false, touchZones, "crafter_grid_prev", nil, totalXP > 1 or totalYP > 1)
+        crafterButton("[>]", w - 5, navY, false, touchZones, "crafter_grid_next", nil, totalXP > 1 or totalYP > 1)
+    end
+    return gridY + (lastY - firstY + 1)
+end
+
+function drawCrafterStudioUI(w, h, touchZones)
+    local layout = getCrafterLayout()
+    local mode = crafterEditor.mode or "layout"
+    local x = 2
+    x = crafterButton("[ СХЕМА ]", x, 12, mode == "layout", touchZones, "crafter_mode", "layout") + 1
+    x = crafterButton("[ НОВЫЙ РЕЦЕПТ ]", x, 12, mode == "recipe", touchZones, "crafter_new_recipe") + 1
+    crafterButton("[ РЕЦЕПТЫ ]", x, 12, mode == "list", touchZones, "crafter_mode", "list")
+    drawText(1, 13, string.rep("-", w), colors.gray)
+
+    if mode == "list" then
+        local list = getCrafterRecipeList()
+        local perPage = math.max(1, h - 19)
+        local pages = math.max(1, math.ceil(#list / perPage))
+        crafterEditor.recipePage = math.max(1, math.min(pages, crafterEditor.recipePage or 1))
+        local first = (crafterEditor.recipePage - 1) * perPage + 1
+        drawText(2, 15, "Сохранённые рецепты механических крафтеров", colors.yellow)
+        if #list == 0 then
+            drawText(2, 17, "Пока нет рецептов. Нажмите «Новый рецепт».", colors.gray)
+        end
+        for i = first, math.min(#list, first + perPage - 1) do
+            local entry = list[i]
+            local y = 16 + (i - first)
+            local name = getItemDisplayName(entry.item)
+            local left = "x" .. tostring(entry.recipe.output_count or 1) .. " " .. name
+            drawText(2, y, left:sub(1, math.max(1, w - 17)), colors.white)
+            crafterButton("[ ИЗМЕНИТЬ ]", math.max(2, w - 14), y, false, touchZones, "crafter_edit_saved", i)
+        end
+        local navY = h - 2
+        crafterButton("[ < ]", 2, navY, false, touchZones, "crafter_recipe_prev", nil, crafterEditor.recipePage > 1)
+        drawText(10, navY, string.format("%d/%d", crafterEditor.recipePage, pages), colors.yellow)
+        crafterButton("[ > ]", 18, navY, false, touchZones, "crafter_recipe_next", nil, crafterEditor.recipePage < pages)
+        drawText(2, h - 1, "Редактирование использует общую сохранённую схему.", colors.gray)
+        return
+    end
+
+    local draft = (mode == "recipe") and crafterEditor.draft or nil
+    if mode == "recipe" and not draft then
+        crafterEditor.draft = newCrafterDraft()
+        draft = crafterEditor.draft
+    end
+    local gridY = 17
+    if draft then
+        drawText(2, 14, "Результат:", colors.lightGray)
+        local resultText = draft.result and getItemDisplayName(draft.result) or "ВЫБРАТЬ ИЗ БОЧКИ"
+        local maxResultW = math.max(8, w - 35)
+        if uiTextWidth(resultText) > maxResultW then resultText = resultText:sub(1, maxResultW) end
+        crafterButton("[ " .. resultText .. " ]", 13, 14, false, touchZones, "crafter_pick_result")
+        drawText(2, 15, "Количество:", colors.lightGray)
+        crafterButton("[-]", 14, 15, false, touchZones, "crafter_output_minus")
+        drawText(18, 15, tostring(draft.outputCount or 1), colors.yellow)
+        crafterButton("[+]", 22, 15, false, touchZones, "crafter_output_plus")
+        drawText(27, 15, "Нажмите на клетку и выберите предмет из бочки.", colors.gray)
+    else
+        drawText(2, 14, "Ширина", colors.lightGray)
+        crafterButton("[-]", 10, 14, false, touchZones, "crafter_width", -1)
+        drawText(14, 14, tostring(layout.width), colors.yellow)
+        crafterButton("[+]", 17, 14, false, touchZones, "crafter_width", 1)
+        drawText(23, 14, "Высота", colors.lightGray)
+        crafterButton("[-]", 31, 14, false, touchZones, "crafter_height", -1)
+        drawText(35, 14, tostring(layout.height), colors.yellow)
+        crafterButton("[+]", 38, 14, false, touchZones, "crafter_height", 1)
+        local sideNames = {top="ВЕРХ", bottom="НИЗ", left="ЛЕВО", right="ПРАВО", front="ПЕРЕД", back="ЗАД"}
+        drawText(2, 15, "Редстоун:", colors.lightGray)
+        crafterButton("[ " .. (sideNames[layout.redstone_side] or layout.redstone_side) .. " ]", 12, 15, false, touchZones, "crafter_redstone_side")
+        drawText(27, 15, string.format("Импульс: %.1f с", layout.pulse_time), colors.lightGray)
+        crafterButton("[+]", 43, 15, false, touchZones, "crafter_pulse")
+        drawText(48, 15, "Клетка = один крафтер; адрес сохраняется.", colors.gray)
+    end
+
+    local afterGridY = drawCrafterGrid(layout, draft, gridY, w, h, touchZones)
+    local infoY = math.min(h - 4, afterGridY + 1)
+    local selected = crafterEditor.selectedCell
+    if selected then
+        local sx, sy = selected:match("^(%d+),(%d+)$")
+        local address = layout.cells[selected]
+        local info = "Клетка " .. tostring(sx) .. "," .. tostring(sy) .. ": "
+        if draft then
+            local ing = draft.ingredients[crafterIngredientIndex(tonumber(sx), tonumber(sy))]
+            info = info .. ((ing and ing ~= "nil") and getItemDisplayName(ing) or "пусто")
+        else
+            info = info .. (address or "не назначена")
+        end
+        drawText(2, infoY, info:sub(1, w - 3), address and colors.cyan or colors.lightGray)
+    else
+        local hint = draft and "Символ ## — ингредиент, [] — пустой крафтер."
+            or "Нажмите клетку, чтобы назначить адрес крафтера."
+        drawText(2, infoY, hint:sub(1, w - 3), colors.gray)
+    end
+    if uiMessage ~= "" and h - 3 > infoY then
+        drawText(2, h - 3, uiMessage:sub(1, w - 3), colors.yellow)
+    end
+    local by = h - 1
+    local bx = 2
+    bx = crafterButton("[ ОЧИСТИТЬ КЛЕТКУ ]", bx, by, false, touchZones, "crafter_clear_cell", nil, selected ~= nil) + 1
+    if draft then
+        bx = crafterButton("[ СОХРАНИТЬ ]", bx, by, false, touchZones, "crafter_save_recipe") + 1
+        crafterButton("[ ОТМЕНА ]", bx, by, false, touchZones, "crafter_cancel_recipe")
+    else
+        crafterButton("[ ОЧИСТИТЬ СХЕМУ ]", bx, by, false, touchZones, "crafter_clear_layout")
+    end
+end
+
 function drawCompositeStudioUI(w, h, touchZones)
     local isChance = (compositeDraft.mode == "chance")
     local roomy    = (h >= 34)
@@ -10261,6 +10930,8 @@ function drawCompositePopup(w, h, touchZones, popupRect, popupZoneStart)
             hdr = " SELECT OUTPUT PLATFORM "
         elseif compositePopup.target == "action_device" then
             hdr = " SELECT ACTION DEVICE "
+        elseif compositePopup.target == "crafter_cell" then
+            hdr = " ВЫБОР АДРЕСА МЕХАНИЧЕСКОГО КРАФТЕРА "
         end
         drawText(pX + math.floor((pW - #hdr) / 2), pY, hdr, colors.black, colors.orange)
 
@@ -10384,7 +11055,11 @@ function drawCompositePopup(w, h, touchZones, popupRect, popupZoneStart)
 
         local hdr = (compositePopup.target == "result_item")
             and " SELECT RESULT ITEM FROM BARREL "
-            or " SELECT ACTION ITEM FROM BARREL "
+            or ((compositePopup.target == "crafter_result")
+                and " ВЫБОР РЕЗУЛЬТАТА ИЗ БОЧКИ "
+                or ((compositePopup.target == "crafter_ingredient")
+                    and " ВЫБОР ИНГРЕДИЕНТА ИЗ БОЧКИ "
+                    or " SELECT ACTION ITEM FROM BARREL "))
         drawText(pX + math.floor((pW - #hdr) / 2), pY, hdr, colors.black, colors.lime)
 
         local cols    = 3
@@ -10684,21 +11359,30 @@ end
 function _diB2(w, h, touchZones)
 if learningState == "IDLE" then
 local isTurtleTab = (craftSubTab == "TURTLE")
-local isMachineTab = (craftSubTab ~= "TURTLE")
-local tStr = " [ TURTLE ] "
-local mStr = " [ MACHINES ] "
-local tabsTotal = #tStr + 4 + #mStr
-local tabsX = math.floor((w - tabsTotal) / 2) + 1
+local isMachineTab = (craftSubTab == "MACHINES")
+local isCrafterTab = (craftSubTab == "CRAFTERS")
+local tStr = " [ ЧЕРЕПАХА ] "
+local mStr = " [ МЕХАНИЗМЫ ] "
+local cStr = " [ КРАФТЕРЫ ] "
+local tW, mW, cW = uiTextWidth(tStr), uiTextWidth(mStr), uiTextWidth(cStr)
+local tabsTotal = tW + 2 + mW + 2 + cW
+local tabsX = math.max(1, math.floor((w - tabsTotal) / 2) + 1)
 local tX = tabsX
-local mX = tabsX + #tStr + 4
+local mX = tX + tW + 2
+local cX = mX + mW + 2
 drawText(tX, 9, tStr, isTurtleTab and colors.white or colors.gray, isTurtleTab and colors.gray or colors.black)
-if isTurtleTab then drawText(tX, 10, string.rep("-", #tStr), colors.lime, colors.black) end
-table.insert(touchZones, {id="craft_subtab", arg="TURTLE", x1=tX, x2=tX+#tStr-1, y=9})
+if isTurtleTab then drawText(tX, 10, string.rep("-", tW), colors.lime, colors.black) end
+table.insert(touchZones, {id="craft_subtab", arg="TURTLE", x1=tX, x2=tX+tW-1, y=9})
 drawText(mX, 9, mStr, isMachineTab and colors.white or colors.gray, isMachineTab and colors.gray or colors.black)
-if isMachineTab then drawText(mX, 10, string.rep("-", #mStr), colors.lime, colors.black) end
-table.insert(touchZones, {id="craft_subtab", arg="MACHINES", x1=mX, x2=mX+#mStr-1, y=9})
+if isMachineTab then drawText(mX, 10, string.rep("-", mW), colors.lime, colors.black) end
+table.insert(touchZones, {id="craft_subtab", arg="MACHINES", x1=mX, x2=mX+mW-1, y=9})
+drawText(cX, 9, cStr, isCrafterTab and colors.white or colors.gray, isCrafterTab and colors.gray or colors.black)
+if isCrafterTab then drawText(cX, 10, string.rep("-", cW), colors.lime, colors.black) end
+table.insert(touchZones, {id="craft_subtab", arg="CRAFTERS", x1=cX, x2=cX+cW-1, y=9})
 drawText(1, 11, string.rep("-", w), colors.gray)
-if isTurtleTab then
+if isCrafterTab then
+drawCrafterStudioUI(w, h, touchZones)
+elseif isTurtleTab then
 local midY = math.floor((h + 12) / 2)
 local d1 = "Place recipe in center 3x3 of barrel,"
 local d2 = "then press SCAN."
@@ -15869,7 +16553,9 @@ elseif zone.id == "error_edit_machine" then
 craftErrorLines = {}; craftErrorTitle = nil
 craftErrorEditItems = {}
 local rec = Recipes[zone.arg]
-if rec then
+if rec and rec.type == "crafter" then
+loadCrafterDraft(zone.arg, rec, nil)
+elseif rec then
 currentTab = "RECIPES"
 recipeEditPopup = {
 item          = zone.arg,
@@ -15890,14 +16576,19 @@ rec = alts and alts[altIdx]
 else
 rec = Recipes[zone.arg]
 end
-if rec and rec.type == "composite" then
+if rec and rec.type == "crafter" then
+loadCrafterDraft(zone.arg, rec, altIdx)
+uiMessage = "Редактирование рецепта механических крафтеров."
+if uiMsgTimer then os.cancelTimer(uiMsgTimer) end
+uiMsgTimer = os.startTimer(4)
+elseif rec and rec.type == "composite" then
 local loadedResults = {}
 if rec.results and #rec.results > 0 then
 for _, r in ipairs(rec.results) do
 table.insert(loadedResults, {
 item   = r.item,
 count  = r.count or 1,
-role   = (r.item == zone.arg) and "recipe" or (r.role or "byproduct"),
+role   = r.role or ((r.item == zone.arg) and "recipe" or "byproduct"),
 chance = r.chance
 })
 end
@@ -15910,7 +16601,7 @@ role   = "recipe",
 chance = mainCh
 })
 for _, bp in ipairs(rec.byproducts or {}) do
-if bp.item and bp.item ~= zone.arg then
+if bp.item then
 table.insert(loadedResults, {
 item   = bp.item,
 count  = bp.count or 1,
@@ -16694,6 +17385,116 @@ uiMsgTimer = os.startTimer(3)
 end
 clearLearnTurtle()
 learningState = "IDLE"
+elseif zone.id == "crafter_mode" then
+crafterEditor.mode = zone.arg
+crafterEditor.selectedCell = nil
+crafterEditor.pageX, crafterEditor.pageY = 1, 1
+compositePopup = nil
+if zone.arg == "recipe" and not crafterEditor.draft then crafterEditor.draft = newCrafterDraft() end
+elseif zone.id == "crafter_new_recipe" then
+crafterEditor.mode = "recipe"
+crafterEditor.draft = newCrafterDraft()
+crafterEditor.selectedCell = nil
+crafterEditor.pageX, crafterEditor.pageY = 1, 1
+compositePopup = nil
+elseif zone.id == "crafter_layout_cell" then
+crafterEditor.selectedCell = zone.arg
+compositePopup = {mode="pick_device", target="crafter_cell", page=1}
+elseif zone.id == "crafter_recipe_cell" then
+crafterEditor.selectedCell = zone.arg
+local layout = getCrafterLayout()
+if crafterEditor.draft and layout.cells[zone.arg] then
+compositePopup = {mode="pick_item", target="crafter_ingredient", page=1}
+end
+elseif zone.id == "crafter_clear_cell" then
+local selected = crafterEditor.selectedCell
+if selected then
+if crafterEditor.mode == "recipe" and crafterEditor.draft then
+local x, y = selected:match("^(%d+),(%d+)$")
+if x and y then
+crafterEditor.draft.ingredients[crafterIngredientIndex(tonumber(x), tonumber(y))] = "nil"
+end
+else
+getCrafterLayout().cells[selected] = nil
+saveData()
+end
+end
+elseif zone.id == "crafter_clear_layout" then
+getCrafterLayout().cells = {}
+crafterEditor.selectedCell = nil
+saveData()
+uiMessage = "Схема крафтеров очищена."
+if uiMsgTimer then os.cancelTimer(uiMsgTimer) end
+uiMsgTimer = os.startTimer(3)
+elseif zone.id == "crafter_width" or zone.id == "crafter_height" then
+local layout = getCrafterLayout()
+local field = (zone.id == "crafter_width") and "width" or "height"
+layout[field] = math.max(1, math.min(15, layout[field] + (tonumber(zone.arg) or 0)))
+for key in pairs(layout.cells) do
+local x, y = key:match("^(%d+),(%d+)$")
+if not x or tonumber(x) > layout.width or tonumber(y) > layout.height then layout.cells[key] = nil end
+end
+crafterEditor.pageX, crafterEditor.pageY = 1, 1
+saveData()
+elseif zone.id == "crafter_redstone_side" then
+local sides = {"top", "bottom", "left", "right", "front", "back"}
+local layout = getCrafterLayout()
+local current = 1
+for i, side in ipairs(sides) do if side == layout.redstone_side then current = i; break end end
+layout.redstone_side = sides[current % #sides + 1]
+saveData()
+elseif zone.id == "crafter_pulse" then
+local pulses = {0.1, 0.3, 0.5, 1.0}
+local layout = getCrafterLayout()
+local nextPulse = pulses[1]
+for _, value in ipairs(pulses) do
+if value > layout.pulse_time + 0.01 then nextPulse = value; break end
+end
+layout.pulse_time = nextPulse
+saveData()
+elseif zone.id == "crafter_grid_prev" or zone.id == "crafter_grid_next" then
+local layout = getCrafterLayout()
+local mw, mh = monitor.getSize()
+local maxCols = math.max(1, math.min(layout.width, math.floor((mw - 4) / 2)))
+local maxRows = math.max(1, math.min(layout.height, mh - 17 - 6))
+local totalXP = math.max(1, math.ceil(layout.width / maxCols))
+local totalYP = math.max(1, math.ceil(layout.height / maxRows))
+if zone.id == "crafter_grid_prev" then
+if (crafterEditor.pageX or 1) > 1 then crafterEditor.pageX = crafterEditor.pageX - 1
+elseif (crafterEditor.pageY or 1) > 1 then
+crafterEditor.pageY = crafterEditor.pageY - 1
+crafterEditor.pageX = totalXP
+end
+else
+if (crafterEditor.pageX or 1) < totalXP then crafterEditor.pageX = crafterEditor.pageX + 1
+elseif (crafterEditor.pageY or 1) < totalYP then
+crafterEditor.pageY = crafterEditor.pageY + 1
+crafterEditor.pageX = 1
+end
+end
+elseif zone.id == "crafter_pick_result" then
+if crafterEditor.draft then compositePopup = {mode="pick_item", target="crafter_result", page=1} end
+elseif zone.id == "crafter_output_minus" then
+if crafterEditor.draft then crafterEditor.draft.outputCount = math.max(1, (crafterEditor.draft.outputCount or 1) - 1) end
+elseif zone.id == "crafter_output_plus" then
+if crafterEditor.draft then crafterEditor.draft.outputCount = math.min(999, (crafterEditor.draft.outputCount or 1) + 1) end
+elseif zone.id == "crafter_save_recipe" then
+local errSave, okSave = saveCrafterDraft()
+uiMessage = errSave or okSave or ""
+if uiMsgTimer then os.cancelTimer(uiMsgTimer) end
+uiMsgTimer = os.startTimer(errSave and 5 or 3)
+elseif zone.id == "crafter_cancel_recipe" then
+crafterEditor.draft = nil
+crafterEditor.mode = "layout"
+crafterEditor.selectedCell = nil
+compositePopup = nil
+elseif zone.id == "crafter_recipe_prev" then
+crafterEditor.recipePage = math.max(1, (crafterEditor.recipePage or 1) - 1)
+elseif zone.id == "crafter_recipe_next" then
+crafterEditor.recipePage = (crafterEditor.recipePage or 1) + 1
+elseif zone.id == "crafter_edit_saved" then
+local entry = getCrafterRecipeList()[zone.arg]
+if entry then loadCrafterDraft(entry.item, entry.recipe, entry.altIdx) end
 elseif zone.id == "comp_mode_normal" then
 compositeDraft.mode = "normal"
 elseif zone.id == "comp_mode_chance" then
@@ -16982,7 +17783,7 @@ if res.role == "recipe" and res.item and res.item ~= "" then
 local targetName = res.item
 local byproductsList = {}
 for _, o in ipairs(resultsSnap) do
-if o.item ~= targetName then
+if o ~= res then
 table.insert(byproductsList, {
 item   = o.item,
 count  = o.count,
@@ -17138,6 +17939,17 @@ else
 compositeDraft.outputPlatform = zone.arg
 end
 compositePopup = nil
+elseif compositePopup.target == "crafter_cell" then
+local selected = crafterEditor.selectedCell
+if selected then
+local layout = getCrafterLayout()
+for key, address in pairs(layout.cells) do
+if key ~= selected and address == zone.arg then layout.cells[key] = nil end
+end
+layout.cells[selected] = zone.arg
+saveData()
+end
+compositePopup = nil
 elseif compositePopup.target == "action_device" then
 local act = compositeDraft.actions[compositePopup.actionIdx]
 if act then
@@ -17171,15 +17983,20 @@ end
 end
 end
 compositePopup = nil
+elseif compositePopup.target == "crafter_ingredient" then
+local selected = crafterEditor.selectedCell
+local draft = crafterEditor.draft
+if selected and draft then
+local x, y = selected:match("^(%d+),(%d+)$")
+if x and y then draft.ingredients[crafterIngredientIndex(tonumber(x), tonumber(y))] = zone.arg end
+end
+compositePopup = nil
+elseif compositePopup.target == "crafter_result" then
+if crafterEditor.draft then crafterEditor.draft.result = zone.arg end
+compositePopup = nil
 elseif compositePopup.target == "result_item" then
 local picked = zone.arg
-local retP = compositePopup.returnPage or 1
 compositeDraft.results = compositeDraft.results or {}
-local exists = false
-for _, r in ipairs(compositeDraft.results) do
-if r.item == picked then exists = true break end
-end
-if not exists then
 table.insert(compositeDraft.results, {
 item   = picked,
 count  = 1,
@@ -17187,8 +18004,9 @@ role   = (#compositeDraft.results == 0) and "recipe" or "byproduct",
 chance = nil
 })
 compositeDraft.testDone = true
-end
-compositePopup = { mode = "results", page = retP }
+local newResultPage = #compositeDraft.results
+compositeDraft.resPage = newResultPage
+compositePopup = { mode = "results", page = newResultPage }
 end
 end
 elseif zone.id == "comp_select_fluid" then
